@@ -1,0 +1,16 @@
+name: face-recognition
+display_name: Face Recognition
+version: 0.1.0
+category: analytics
+description: Watchlist enrollment and matching. Pluggable face engine (InsightFace/ONNX by default build arg).
+image: ellalon/face-recognition:0.1.0
+autostart: false
+http_port: 8000
+gpu: false          # set true when the image is built with ENGINE=insightface-gpu
+env:
+  MATCH_THRESHOLD: "0.45"
+  FACE_FPS: "2"
+volumes:
+  - host: data
+    container: /data
+capabilities: [watchlist, face-match]

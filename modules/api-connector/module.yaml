@@ -1,0 +1,12 @@
+name: api-connector
+display_name: API Connectivity
+version: 0.1.0
+category: integration
+description: Outbound webhooks for platform events and inbound integration endpoint for 3rd-party systems (access control, alarm panels, PSIM).
+image: ellalon/api-connector:0.1.0
+autostart: true
+http_port: 8000
+volumes:
+  - host: data
+    container: /data
+capabilities: [webhooks, inbound-events]

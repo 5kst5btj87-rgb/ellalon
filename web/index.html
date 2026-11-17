@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ellalon</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<section id="login" class="login hidden">
+  <form id="loginForm" class="card">
+    <h1>ELLALON</h1>
+    <p class="muted">Security management platform</p>
+    <input name="username" placeholder="Username" autocomplete="username" required>
+    <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
+    <button>Sign in</button>
+    <p id="loginErr" class="err"></p>
+  </form>
+</section>
+
+<section id="shell" class="hidden">
+  <header>
+    <b class="brand">ELLALON</b>
+    <nav>
+      <a data-tab="wall" class="active">Video wall</a>
+      <a data-tab="incidents">Incidents</a>
+      <a data-tab="events">Events</a>
+      <a data-tab="playback">Playback</a>
+      <a data-tab="cameras">Cameras</a>
+      <a data-tab="integrations">Integrations</a>
+      <a data-tab="modules">System</a>
+    </nav>
+    <span id="who" class="muted"></span>
+    <button id="pwBtn" class="ghost">Change password</button>
+    <button id="logout" class="ghost">Sign out</button>
+  </header>
+
+  <main>
+    <div id="tab-wall" class="tab">
+      <div class="toolbar">
+        <label>Grid <select id="grid"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+        <span class="muted">Click a tile to choose a camera. Rules can push cameras here automatically.</span>
+      </div>
+      <div id="wall" class="wall"></div>
+    </div>
+
+    <div id="tab-incidents" class="tab hidden">
+      <div class="toolbar"><select id="incFilter"><option value="">All</option><option>open</option><option>acknowledged</option><option>closed</option></select></div>
+      <table><thead><tr><th>Time</th><th>Severity</th><th>Title</th><th>Camera</th><th>Status</th><th></th></tr></thead><tbody id="incidents"></tbody></table>
+    </div>
+
+    <div id="tab-events" class="tab hidden">
+      <div class="toolbar"><span class="dot" id="wsDot"></span><span class="muted">Live event stream</span></div>
+      <table><thead><tr><th>Time</th><th>Source</th><th>Type</th><th>Severity</th><th>Camera</th><th>Details</th></tr></thead><tbody id="events"></tbody></table>
+    </div>
+
+    <div id="tab-playback" class="tab hidden">
+      <div class="toolbar">
+        <select id="pbCam"></select>
+        <input type="date" id="pbDay">
+        <button id="pbLoad">Load</button>
+      </div>
+      <div class="split"><ul id="pbList" class="list"></ul><video id="pbVideo" controls></video></div>
+    </div>
+
+    <div id="tab-cameras" class="tab hidden">
+      <div class="toolbar">
+        <button id="camAdd">+ Add camera</button>
+        <button id="camBatch" class="ghost">Batch add</button>
+        <span class="muted">Click Edit to change a camera or copy its settings to other cameras.</span>
+      </div>
+      <table><thead><tr><th>#</th><th>Name</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
+    </div>
+
+    <div id="tab-integrations" class="tab hidden">
+      <div class="toolbar">
+        <button id="intAdd">+ Add system</button>
+        <select id="intFilter"><option value="">All systems</option></select>
+        <span class="muted">RISCO intrusion panels and Apollo access control. Link devices to cameras to see them on alarm.</span>
+      </div>
+      <div id="intSystems" class="grid-cards"></div>
+      <h3 class="section">Devices</h3>
+      <table><thead><tr><th>System</th><th>Type</th><th>#</th><th>Name</th><th>State</th><th>Cameras</th><th></th></tr></thead><tbody id="intDevices"></tbody></table>
+    </div>
+
+    <div id="tab-modules" class="tab hidden">
+      <div class="toolbar"><button id="reload" class="ghost">Rescan modules</button><span class="muted">Each module is its own container managed by core.</span></div>
+      <div id="modules" class="grid-cards"></div>
+      <pre id="logs" class="logs hidden"></pre>
+    </div>
+  </main>
+</section>
+
+<dialog id="picker"><form method="dialog"><h3>Select camera</h3><div id="pickList" class="list"></div><button value="clear" class="ghost">Clear tile</button> <button value="cancel">Close</button></form></dialog>
+<dialog id="camDialog" class="wide"><form id="camEdit">
+  <h3 id="camTitle">Add camera</h3>
+  <div class="fgrid">
+    <label>Name<input name="name" required></label>
+    <label>Location<input name="location"></label>
+    <label>Brand<select name="brand" class="brandSel"></select></label>
+    <label>IP address<input name="ip" required placeholder="192.168.1.64"></label>
+    <label class="rtspOnly">RTSP port<input name="port" type="number" value="554"></label>
+    <label class="onvifOnly">ONVIF port<input name="onvif_port" type="number" value="80"></label>
+    <label>Username<input name="username" autocomplete="off"></label>
+    <label>Password<input name="password" type="password" autocomplete="new-password"></label>
+    <label class="chOnly">Channel<input name="channel" type="number" value="1" min="1"></label>
+    <label class="customOnly">Main stream path<input name="main_path" placeholder="/stream1"></label>
+    <label class="customOnly">Substream path<input name="sub_path" placeholder="/stream2"></label>
+  </div>
+  <div class="checks">
+    <label><input type="checkbox" name="use_substream" checked> Substream</label>
+    <label><input type="checkbox" name="record" checked> Record</label>
+    <label><input type="checkbox" name="analytics"> Analytics</label>
+    <label><input type="checkbox" name="face_recognition"> Face recognition</label>
+    <label><input type="checkbox" name="enabled" checked> Enabled</label>
+  </div>
+  <p class="muted small" id="camUrls"></p>
+  <div id="copyBox" class="copybox hidden">
+    <h4>Copy settings to other cameras</h4>
+    <p class="muted small">1. Choose what to copy</p>
+    <div class="checks" id="copyFields"></div>
+    <p class="muted small">2. Choose cameras <a id="copyAll" class="link">select all</a></p>
+    <div class="checks" id="copyTargets"></div>
+    <button type="button" class="ghost" id="copyApply">Save &amp; copy to selected</button>
+  </div>
+  <p id="camMsg" class="err"></p>
+  <button type="button" class="ghost" data-close>Cancel</button> <button>Save</button>
+</form></dialog>
+
+<dialog id="batchDialog" class="wide"><form id="batchForm">
+  <h3>Batch add cameras</h3>
+  <div class="fgrid">
+    <label>Brand<select name="brand" class="brandSel"></select></label>
+    <label>Location<input name="location"></label>
+    <label class="full">IP addresses<textarea name="ips" rows="4" required placeholder="One per line or comma separated. Ranges allowed:&#10;192.168.1.64&#10;192.168.1.70-79"></textarea></label>
+    <label class="chOnly">Channels<input name="channels" value="1" placeholder="1  or  1-16 for an NVR"></label>
+    <label class="rtspOnly">RTSP port<input name="port" type="number" value="554"></label>
+    <label class="onvifOnly">ONVIF port<input name="onvif_port" type="number" value="80"></label>
+    <label>Username<input name="username" autocomplete="off"></label>
+    <label>Password<input name="password" type="password" autocomplete="new-password"></label>
+    <label class="customOnly">Main stream path<input name="main_path" placeholder="/stream1  ({ch} = channel)"></label>
+    <label class="customOnly">Substream path<input name="sub_path" placeholder="/stream2"></label>
+    <label>Name prefix<input name="name_prefix" value="Camera"></label>
+    <label>Start number<input name="start_number" type="number" value="1"></label>
+  </div>
+  <div class="checks">
+    <label><input type="checkbox" name="use_substream" checked> Substream</label>
+    <label><input type="checkbox" name="record" checked> Record</label>
+    <label><input type="checkbox" name="analytics"> Analytics</label>
+    <label><input type="checkbox" name="face_recognition"> Face recognition</label>
+    <label><input type="checkbox" name="enabled" checked> Enabled</label>
+  </div>
+  <p class="muted" id="batchCount"></p>
+  <p id="batchMsg" class="err"></p>
+  <button type="button" class="ghost" data-close>Cancel</button> <button>Add cameras</button>
+</form></dialog>
+
+<dialog id="intDialog" class="wide"><form id="intForm">
+  <h3 id="intTitle">Add system</h3>
+  <div class="fgrid">
+    <label>Type<select name="type" id="intType"></select></label>
+    <label>Name<input name="name" required placeholder="Main building alarm"></label>
+  </div>
+  <div class="fgrid" id="intFields"></div>
+  <div class="checks"><label><input type="checkbox" name="enabled" checked> Enabled</label></div>
+  <p class="muted small" id="intHelp"></p>
+  <p id="intMsg" class="err"></p>
+  <button type="button" class="ghost" data-close>Cancel</button> <button>Save</button>
+</form></dialog>
+
+<dialog id="importDialog" class="wide"><form id="importForm">
+  <h3>Import doors</h3>
+  <p class="muted small">Paste a CSV exported from APACS: one door per line, <b>door id, door name</b>. Leave empty to import through the APACS API (doors endpoint).</p>
+  <div class="fgrid"><label class="full"><textarea name="csv" rows="8" placeholder="1, Main entrance&#10;2, Server room&#10;3, Loading dock"></textarea></label></div>
+  <p id="importMsg" class="err"></p>
+  <button type="button" class="ghost" data-close>Cancel</button> <button>Import</button>
+</form></dialog>
+
+<dialog id="linkDialog"><form id="linkForm">
+  <h3 id="linkTitle">Linked cameras</h3>
+  <p class="muted small">On alarm these cameras are attached to the incident and pushed to the video wall.</p>
+  <div class="checks" id="linkCams"></div>
+  <button type="button" class="ghost" data-close>Cancel</button> <button>Save</button>
+</form></dialog>
+
+<dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>
+  <div class="stack">
+    <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>
+    <input name="next" type="password" placeholder="New password (min 8 characters)" autocomplete="new-password" minlength="8" required>
+    <input name="confirm" type="password" placeholder="Confirm new password" autocomplete="new-password" minlength="8" required>
+  </div>
+  <p id="pwMsg" class="err"></p>
+  <button type="button" class="ghost" id="pwCancel">Cancel</button> <button>Save</button>
+</form></dialog>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Live streaming gateway (go2rtc): RTSP -> WebRTC / MSE / HLS for browsers and clients.
+# Upstream image, no SDK; core health-checks it over HTTP.
+# Cameras are pushed into it automatically by the video-wall module.
+name: streaming
+display_name: Live Streaming (go2rtc)
+version: 1.9.4
+category: streaming
+description: Low-latency live view gateway. Converts camera RTSP to WebRTC/MSE for any client.
+image: alexxit/go2rtc:1.9.4
+autostart: true
+http_port: 1984
+publish:
+  - "8555:8555/tcp"     # WebRTC
+  - "8555:8555/udp"
+volumes:
+  - host: config
+    container: /config
+health:
+  type: http
+  path: /api
+  port: 1984
+capabilities: [live, webrtc, mse, hls, snapshot]

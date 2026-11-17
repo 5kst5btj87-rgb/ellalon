@@ -1,0 +1,96 @@
+# Ellalon Security Platform - base stack.
+# The "core" container is the main manager: it starts/stops/monitors every
+# module container (VMS, video wall, analytics, ...) through the Docker API.
+name: ellalon
+
+services:
+  # Read-limited proxy in front of the Docker socket, so core never gets the raw socket.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      INFO: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTARTS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [internal]
+
+  traefik:
+    image: traefik:v3.6
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.endpoint=tcp://socket-proxy:2375
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=ellalon_net
+      - --entrypoints.web.address=:80
+      - --api.dashboard=false
+    ports:
+      - "${ELLALON_HTTP_PORT:-80}:80"
+    depends_on: [socket-proxy]
+    networks: [internal, ellalon_net]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ellalon
+      POSTGRES_PASSWORD: ${ELLALON_DB_PASSWORD:-ellalon}
+      POSTGRES_DB: ellalon
+    volumes:
+      - ${ELLALON_DATA_ROOT:-/var/lib/ellalon}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ellalon"]
+      interval: 5s
+      retries: 20
+    networks: [ellalon_net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ${ELLALON_DATA_ROOT:-/var/lib/ellalon}/redis:/data
+    networks: [ellalon_net]
+
+  core:
+    image: ellalon/core:${ELLALON_VERSION:-0.1.0}
+    build:
+      context: .
+      dockerfile: core/Dockerfile
+    container_name: ellalon-core
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ELLALON_DOCKER_HOST: tcp://socket-proxy:2375
+      ELLALON_DATABASE_URL: postgresql+psycopg://ellalon:${ELLALON_DB_PASSWORD:-ellalon}@postgres:5432/ellalon
+      ELLALON_REDIS_URL: redis://redis:6379/0
+      ELLALON_MODULES_DIR: /opt/ellalon/modules
+    volumes:
+      - ./modules:/opt/ellalon/modules:ro
+      - ./web:/opt/ellalon/web:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      socket-proxy: { condition: service_started }
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.core.rule=PathPrefix(`/`)
+      - traefik.http.routers.core.priority=1
+      - traefik.http.routers.core.entrypoints=web
+      - traefik.http.services.core.loadbalancer.server.port=8000
+      # Shared forward-auth middleware applied to every module route (/modules/*)
+      - traefik.http.middlewares.ellalon-auth.forwardauth.address=http://ellalon-core:8000/api/auth/verify
+      - traefik.http.middlewares.ellalon-auth.forwardauth.authResponseHeaders=X-Ellalon-User,X-Ellalon-Role
+    networks: [internal, ellalon_net]
+
+networks:
+  internal:
+  ellalon_net:
+    name: ellalon_net   # fixed name: core attaches module containers to it

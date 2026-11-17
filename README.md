@@ -1,0 +1,115 @@
+# Ellalon – Modular Security Management Platform
+
+Docker-based security platform for Ubuntu. One **core** container manages every other container
+(module): VMS recording, live streaming, video wall, analytics, face recognition, API
+connectivity, command & control and 3rd-party integrations (RISCO, Apollo). Every client (web
+included; Windows and mobile later) uses the same REST + WebSocket API.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
+
+## Install on a new server
+
+Copy the installer file to the server (Ubuntu 22.04 / 24.04 / 26.04, x86-64 or ARM64) and run:
+
+```bash
+sudo bash ellalon-installer-<version>.run
+```
+
+The installer installs Docker if needed, unpacks Ellalon to `/opt/ellalon`, generates secrets,
+builds the images, starts everything and prints the web address and admin password.
+
+| Option | |
+|---|---|
+| `--port 8080` | web port (default 80) |
+| `--data /mnt/storage/ellalon` | where recordings and the database live (default `/var/lib/ellalon`) |
+| `--all-modules` | also build analytics and face recognition |
+| `--gpu` | install the NVIDIA Container Toolkit (GPU analytics / face recognition) |
+| `--restore-db FILE` | load a database backup into the new installation |
+| `--extract DIR` | only unpack the files |
+
+Running the installer again on the same server upgrades it and keeps settings and data.
+
+### Online install (one command, from GitHub)
+
+The code lives in the private repository `5kst5btj87-rgb/ellalon`. Create a read-only token once:
+GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** →
+Generate new token → Repository access: *Only select repositories* → `ellalon` →
+Permissions → Repository permissions → **Contents: Read-only** → Generate. Then on the server:
+
+```bash
+curl -fsSL -H "Authorization: Bearer <TOKEN>" \
+  https://raw.githubusercontent.com/5kst5btj87-rgb/ellalon/main/install-online.sh \
+  | sudo bash -s -- --token <TOKEN>
+```
+
+Installer options (`--port`, `--data`, ...) go after the token. The server remembers the token,
+so later updates are just `sudo ellalon update` (settings and data are kept).
+
+### Offline installer (sites without internet)
+
+On a running Ellalon server with the same CPU type as the target (x86-64 or ARM64):
+
+```bash
+sudo ellalon bundle --offline        # -> /opt/ellalon/dist/ellalon-installer-<v>-offline-<arch>.run
+```
+
+It contains all Docker images, so the target needs no internet for Ellalon itself (Docker must be
+installed, or reachable through the internet, on the target).
+
+### Moving a site to a new server
+
+```bash
+sudo ellalon backup                  # on the old server: database + module settings
+sudo bash ellalon-installer-<v>.run --restore-db ellalon-db-<date>.sql --no-start   # new server
+sudo tar -xzf ellalon-modules-<date>.tar.gz -C /var/lib/ellalon/modules && sudo ellalon up
+```
+
+Copy recordings separately if you need them (`/var/lib/ellalon/modules/vms-recorder/recordings`).
+
+## Everyday commands
+
+| | |
+|---|---|
+| `sudo ellalon status` | core services and module containers |
+| `sudo ellalon logs core` | follow a log (core, vms-recorder, integrations, ...) |
+| `sudo ellalon restart` | restart everything |
+| `sudo ellalon password [user]` | set a new password |
+| `sudo ellalon backup` | back up the database and module settings |
+| `sudo ellalon build <module>` | build one module (e.g. after enabling an optional module) |
+| `sudo ellalon update` | install the latest version from GitHub (online installs) |
+| `sudo ellalon bundle [--offline]` | create an installer file |
+
+## Layout
+
+```
+core/            main manager container (FastAPI + Docker SDK)
+sdk/python/      module SDK (heartbeat, bus, commands, core API client)
+modules/<name>/  one folder per module: module.yaml + Dockerfile + code
+templates/module copy this to start a new module
+web/             web client (served by core at /)
+installer/       installer and installer builder
+```
+
+## Adding a module
+
+```bash
+cp -r templates/module modules/lpr && $EDITOR modules/lpr/module.yaml modules/lpr/app.py
+sudo ellalon build lpr
+```
+
+Web UI → System → **Rescan modules** → **Enable**. Core creates the container, routes
+`/modules/lpr/` to it behind the login, and tracks its health.
+
+## API
+
+- Interactive docs: `http://<server>/api/docs` and `/modules/<name>/docs`.
+- Login: `POST /api/auth/login {"username","password"}` → `{"token"}`; then `Authorization: Bearer <token>`.
+- Live events: `ws://<server>/api/ws?token=<token>`.
+- C&C: `POST /api/commands/videowall {"command":"push_camera","args":{"wall":"Main wall","tile":0,"camera_id":3}}`.
+
+## Production checklist
+
+- Put TLS on the web port and close plain HTTP; keep the server on its own VLAN.
+- Change the admin password and create named operator accounts.
+- Size the data disk for recordings (about 10.8 GB per Mbps per camera per day).
+- Face recognition is biometric processing: confirm the legal basis before enabling it.

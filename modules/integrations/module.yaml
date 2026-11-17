@@ -1,0 +1,12 @@
+name: integrations
+display_name: 3rd-party Integrations
+version: 0.1.0
+category: integration
+description: RISCO intrusion panels (LAN) and Apollo APACS access control - import devices, live alarms, control, camera linking.
+image: ellalon/integrations:0.1.0
+autostart: true
+http_port: 8000
+volumes:
+  - host: data
+    container: /data
+capabilities: [risco, apollo, device-import, alarm-to-camera]

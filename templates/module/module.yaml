@@ -1,0 +1,17 @@
+# Copy this folder to modules/<your-module>/, rename, then:
+#   ./ellalon.sh build <your-module>   and click "Rescan modules" -> "Enable" in the UI.
+name: my-module
+display_name: My Module
+version: 0.1.0
+category: other
+description: What this module does.
+image: ellalon/my-module:0.1.0
+autostart: false
+http_port: 8000
+env: {}
+volumes:
+  - host: data
+    container: /data
+gpu: false
+depends_on: []
+capabilities: []

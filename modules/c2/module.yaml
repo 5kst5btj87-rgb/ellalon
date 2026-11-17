@@ -1,0 +1,13 @@
+name: c2
+display_name: Command & Control
+version: 0.1.0
+category: c2
+description: Incident management. Rules turn events into incidents and trigger automatic actions (push camera to wall, webhook, ...).
+image: ellalon/c2:0.1.0
+autostart: true
+http_port: 8000
+depends_on: [videowall]
+volumes:
+  - host: data
+    container: /data
+capabilities: [incidents, rules, automation]
