@@ -63,8 +63,6 @@ assert u, 'no such user'; u.password_hash=hash_password(getpass.getpass('New pas
       -C "$data/modules" .
     echo "==> Backup written to $data/backups/ (ellalon-db-$stamp.sql, ellalon-modules-$stamp.tar.gz)" ;;
   bundle) shift; exec installer/make-installer.sh "$@" ;;
-  update)
-    [[ -f .update ]] || { echo "Online updates are not set up here (this server was installed from a file)." >&2; exit 1; }
-    exec bash install-online.sh --dir "$PWD" ;;
+  update) exec bash install-online.sh --dir "$PWD" ;;
   *) sed -n '2,10p' "$0" ;;
 esac
