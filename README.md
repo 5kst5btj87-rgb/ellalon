@@ -76,6 +76,26 @@ or to the one chosen in the camera's settings (Cameras → Edit → Recording st
 to other cameras). If a network share is down, its cameras record to the default storage until
 it is back. **Test** checks the connection and write access before saving.
 
+### Recording servers (other Ubuntu / Windows machines)
+
+Storage → **+ Add storage** → type **Recording server**. Save, and copy the one-line command shown
+(one-time pairing code, valid 24 h) to the machine that will record:
+
+```bash
+# Ubuntu / Debian
+curl -fsSL https://raw.githubusercontent.com/5kst5btj87-rgb/ellalon/main/recorder/install-recorder.sh | sudo bash -s -- --server http://ELLALON --code XXXX-XXXX
+```
+```powershell
+# Windows 10 / 11 / Server - PowerShell as Administrator
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/5kst5btj87-rgb/ellalon/main/recorder/install-recorder.ps1))) -Server http://ELLALON -Code XXXX-XXXX
+```
+
+Then set **Cameras → Edit → Recording storage** to that recording server. It records those
+cameras locally, keeps its camera list on disk, keeps recording when the Ellalon server is down,
+and starts recording at boot even if the Ellalon server is unreachable (systemd service on Ubuntu,
+SYSTEM startup task on Windows). Playback goes through the Ellalon server (recorder TCP 8090).
+On the recorder: `sudo ellalon-recorder status` (Ubuntu) or see `C:\ProgramData\EllalonRecorder\recorder.log`.
+
 ## Everyday commands
 
 | | |

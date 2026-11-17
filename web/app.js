@@ -127,8 +127,14 @@ function loadPlayback() {
 $("#pbLoad").onclick = async () => {
   const day = $("#pbDay").value.replaceAll("-", "");
   try {
-    const segs = await mod("vms-recorder", `/cameras/${$("#pbCam").value}/recordings?day=${day}`);
-    $("#pbList").innerHTML = segs.map((s) => `<li data-url="/modules/vms-recorder/${esc(s.url)}">${new Date(s.start).toLocaleTimeString()} <span class="muted">${(s.bytes / 1e6).toFixed(0)} MB</span></li>`).join("") || `<li class="muted">No recordings</li>`;
+    const cid = +$("#pbCam").value, cam = cameras.find((c) => c.id === cid);
+    let segs = await mod("vms-recorder", `/cameras/${cid}/recordings?day=${day}`).catch(() => []);
+    segs = segs.map((s) => ({ ...s, url: "/modules/vms-recorder/" + s.url }));
+    if (!storages.length) await loadStorages().catch(() => {});
+    const sid = cam?.settings?.storage_id, rec = storages.find((s) => s.id === sid && s.type === "recorder");
+    if (rec) segs = segs.concat(await api(`/api/recorders/${sid}/recordings?camera=${cid}&day=${day}`).catch(() => []));
+    segs.sort((a, b) => a.start.localeCompare(b.start));
+    $("#pbList").innerHTML = segs.map((s) => `<li data-url="${esc(s.url)}">${new Date(s.start).toLocaleTimeString()} <span class="muted">${(s.bytes / 1e6).toFixed(0)} MB</span></li>`).join("") || `<li class="muted">No recordings</li>`;
     $("#pbList").querySelectorAll("li[data-url]").forEach((li) => (li.onclick = () => { $("#pbVideo").src = li.dataset.url; $("#pbVideo").play(); }));
   } catch { $("#pbList").innerHTML = `<li class="muted">Recorder module not running</li>`; }
 };
@@ -431,14 +437,14 @@ $("#linkForm").onsubmit = async (e) => {
 
 // ---------------------------------------------------------------- storage
 let storages = [], stEditing = null;
-const ST_TYPE = { local: "Local disk / folder", smb: "SMB share", nfs: "NFS share" };
+const ST_TYPE = { local: "Local disk / folder", smb: "SMB share", nfs: "NFS share", recorder: "Recording server" };
 const ST_FIELDS = ["name", "type", "path", "server", "share", "username", "password", "domain", "options"];
 const gb = (x) => (x == null ? "?" : x >= 1000 ? (x / 1000).toFixed(1) + " TB" : x.toFixed(x < 10 ? 1 : 0) + " GB");
 async function loadStorages() { storages = await api("/api/storage"); return storages; }
 function storageOptions(sel, current) {
   const def = storages.find((s) => s.is_default);
   sel.innerHTML = `<option value="">Default storage${def ? ` (${esc(def.name)})` : ""}</option>` +
-    storages.filter((s) => s.enabled).map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+    storages.filter((s) => s.enabled).map((s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.type === "recorder" ? " (recording server)" : ""}</option>`).join("");
   sel.value = current && storages.some((s) => s.id === current) ? current : "";
 }
 async function loadStorageTab() {
@@ -448,6 +454,7 @@ async function loadStorageTab() {
   const admin = me.role === "admin";
   $("#stAdd").classList.toggle("hidden", !admin);
   $("#stList").innerHTML = storages.map((s) => {
+    if (s.type === "recorder") return recorderCard(s, admin);
     const x = stat[s.id] || {}, used = x.total_gb ? 100 - (x.free_gb / x.total_gb) * 100 : 0;
     const st = !s.enabled ? ["", "Disabled"] : s.mount_error || x.mounted === false ? ["bad", "Not connected"]
       : x.writable === false ? ["bad", "Cannot write"] : x.mounted ? ["ok", "Connected"] : ["wait", "Checking…"];
@@ -463,17 +470,58 @@ async function loadStorageTab() {
     </div>`;
   }).join("");
 }
+function recorderCard(s, admin) {
+  const r = s.recorder || {}, cams = Object.entries(r.cameras || {}), d = r.disk || {};
+  const used = d.total_gb ? 100 - (d.free_gb / d.total_gb) * 100 : 0;
+  const rec = cams.filter(([, c]) => c.state === "recording").length, bad = cams.filter(([, c]) => c.state === "failing");
+  const st = !r.registered ? ["wait", "Not installed yet"] : r.online ? ["ok", "Online"] : ["bad", "Offline (keeps recording on its own)"];
+  return `<div class="card mod">
+    <h3><span class="dot ${st[0]}"></span> ${esc(s.name)} <span class="sev">recording server</span></h3>
+    <div class="muted">${r.registered ? `${esc(r.hostname)} · ${esc(r.address)} · ${esc(r.os)} · v${esc(r.version)}` : "Waiting for installation"}</div>
+    ${d.total_gb ? `<div class="bar"><span class="${used > 90 ? "full" : ""}" style="width:${used.toFixed(0)}%"></span></div>
+      <div class="small muted">${gb(d.free_gb)} free of ${gb(d.total_gb)} · recordings ${gb(d.recordings_gb || 0)}${d.oldest ? " · oldest " + new Date(d.oldest).toLocaleDateString() : ""} · ${esc(r.folder || "")}</div>` : ""}
+    <p class="small">${st[1]}${r.last_seen && !r.online && r.registered ? " · last seen " + new Date(r.last_seen).toLocaleString() : ""} · ${r.online ? `${rec} of ${cams.length} camera(s) recording` : `${s.cameras} camera(s) assigned`} · keep ${s.retention_days} days · keep ${s.min_free_gb} GB free</p>
+    ${bad.length ? `<ul class="camlist">${bad.map(([, c]) => `<li class="bad">${esc(c.name)}: ${esc((c.error || "not recording").split("\n").pop())}</li>`).join("")}</ul>` : ""}
+    ${admin ? `<div class="actions"><button class="ghost" onclick="stEdit('${s.id}')">Edit</button>
+      <button class="ghost" onclick="recInstall('${s.id}')">${r.registered ? "Reinstall / move" : "Install commands"}</button>
+      <button class="danger" onclick="stDelete('${s.id}')">Delete</button></div>` : ""}
+  </div>`;
+}
+function showInstall(name, code, expires) {
+  const srv = location.origin, raw = "https://raw.githubusercontent.com/5kst5btj87-rgb/ellalon/main/recorder";
+  $("#recTitle").textContent = "Install the recording server: " + name;
+  $("#recCode").textContent = code;
+  $("#recExp").textContent = expires ? "(valid until " + new Date(expires).toLocaleString() + ", one use)" : "";
+  $("#recUbuntu").textContent = `curl -fsSL ${raw}/install-recorder.sh | sudo bash -s -- --server ${srv} --code ${code}`;
+  $("#recWindows").textContent = `& ([scriptblock]::Create((irm ${raw}/install-recorder.ps1))) -Server ${srv} -Code ${code}`;
+  $("#recDialog").showModal();
+}
+document.querySelectorAll("[data-copy]").forEach((b) => (b.onclick = async () => {
+  try { await navigator.clipboard.writeText($("#" + b.dataset.copy).textContent); b.textContent = "Copied"; }
+  catch { const r = document.createRange(); r.selectNodeContents($("#" + b.dataset.copy)); getSelection().removeAllRanges(); getSelection().addRange(r); b.textContent = "Selected - press Ctrl+C"; }
+  setTimeout(() => (b.textContent = "Copy"), 2500);
+}));
+window.recInstall = async (id) => {
+  const s = storages.find((x) => x.id === id);
+  if (s.recorder?.registered && !confirm("Create a new pairing code? Installing it on a machine replaces the current recording server for this storage.")) return;
+  try { const r = await api(`/api/storage/${id}/pairing`, { method: "POST" }); showInstall(s.name, r.code, r.code_expires); }
+  catch (err) { alert(errText(err)); }
+};
 function stTypeUi() {
   const t = $("#stType").value, f = $("#stForm");
-  f.querySelectorAll(".st-local").forEach((e) => e.classList.toggle("hidden", t !== "local"));
-  f.querySelectorAll(".st-remote").forEach((e) => e.classList.toggle("hidden", t === "local"));
+  f.querySelectorAll(".st-path").forEach((e) => e.classList.toggle("hidden", t !== "local" && t !== "recorder"));
+  f.querySelectorAll(".st-remote").forEach((e) => e.classList.toggle("hidden", t === "local" || t === "recorder"));
   f.querySelectorAll(".st-smb").forEach((e) => e.classList.toggle("hidden", t !== "smb"));
   $("#stShareLbl").textContent = t === "nfs" ? "Export path" : "Share name (optionally /folder)";
+  $("#stPathLbl").textContent = t === "recorder" ? "Recording folder on the recording server (empty = default)" : "Folder on this server";
+  el(f, "path").placeholder = t === "recorder" ? "Ubuntu: /var/lib/ellalon-recorder/recordings · Windows: C:\\EllalonRecordings" : "/mnt/disk2/recordings";
+  $("#stTest").classList.toggle("hidden", t === "recorder");
   el(f, "share").placeholder = t === "nfs" ? "/volume1/recordings" : "recordings";
   $("#stHelp").textContent = {
     local: "A folder on this server, for example a second disk mounted at /mnt/disk2. The folder is created if it does not exist.",
     smb: "A Windows file share or NAS share. The user needs read and write permission on the share. Use the server's IP address.",
     nfs: "An NFS export. On the NAS, allow this server's IP address with read/write access.",
+    recorder: "Another Ubuntu or Windows machine records the cameras you assign to it. After saving you get a one-line install command for that machine.",
   }[t];
 }
 $("#stType").onchange = stTypeUi;
@@ -486,7 +534,7 @@ function stBody() {
   return b;
 }
 $("#stAdd").onclick = () => {
-  stEditing = null; const f = $("#stForm"); f.reset(); el(f, "password").placeholder = "";
+  stEditing = null; const f = $("#stForm"); f.reset(); el(f, "password").placeholder = ""; $("#stType").disabled = false;
   $("#stTitle").textContent = "Add storage"; $("#stMsg").textContent = ""; stTypeUi(); $("#stDialog").showModal();
 };
 window.stEdit = (id) => {
@@ -494,6 +542,7 @@ window.stEdit = (id) => {
   for (const k of ST_FIELDS) if (s[k] != null) el(f, k).value = s[k];
   el(f, "password").value = ""; el(f, "password").placeholder = s.has_password ? "(unchanged)" : "";
   el(f, "retention_days").value = s.retention_days; el(f, "min_free_gb").value = s.min_free_gb; el(f, "enabled").checked = s.enabled;
+  $("#stType").disabled = true;   // a storage keeps its type; add a new one to change it
   $("#stTitle").textContent = "Edit " + s.name; $("#stMsg").textContent = ""; stTypeUi(); $("#stDialog").showModal();
 };
 $("#stTest").onclick = async () => {
@@ -507,8 +556,10 @@ $("#stTest").onclick = async () => {
 $("#stForm").onsubmit = async (e) => {
   e.preventDefault(); const msg = $("#stMsg"); msg.className = "muted"; msg.textContent = "Saving…";
   try {
-    await (stEditing ? api(`/api/storage/${stEditing.id}`, { method: "PUT", body: stBody() }) : api("/api/storage", { method: "POST", body: stBody() }));
+    const body = stBody();
+    const r = await (stEditing ? api(`/api/storage/${stEditing.id}`, { method: "PUT", body }) : api("/api/storage", { method: "POST", body }));
     $("#stDialog").close(); loadStorageTab(); setTimeout(loadStorageTab, 20000);
+    if (!stEditing && r.code) showInstall(body.name, r.code, new Date(Date.now() + 864e5).toISOString());
   } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
 };
 window.stDefault = async (id) => {

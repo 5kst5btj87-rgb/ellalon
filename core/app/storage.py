@@ -14,10 +14,12 @@ from pydantic import BaseModel
 from .auth import require
 from .config import settings
 from .db import Camera, SessionLocal, Storage
+from .recorders import STATUS as RECORDER_STATUS, recorder_view, with_new_code
 
 router = APIRouter(prefix="/api")
 
-TYPES = {"local": "Local disk / folder", "smb": "Network share (SMB)", "nfs": "Network share (NFS)"}
+TYPES = {"local": "Local disk / folder", "smb": "Network share (SMB)", "nfs": "Network share (NFS)",
+         "recorder": "Recording server (Ubuntu / Windows)"}
 CONFIG_KEYS = ("path", "server", "share", "username", "password", "domain", "options")
 RESERVED = ("/etc", "/bin", "/boot", "/dev", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin",
             "/sys", "/usr", "/var/lib/docker", "/var/run", "/opt/ellalon", "/snap")
@@ -52,7 +54,9 @@ def validate(b: StorageIn) -> StorageIn:
         raise HTTPException(400, "Enter a name")
     if b.retention_days < 1 or b.min_free_gb < 0:
         raise HTTPException(400, "Days must be at least 1 and free space cannot be negative")
-    if b.type == "local":
+    if b.type == "recorder":            # folder is on the recorder machine (empty = its default)
+        b.path = b.path.strip()
+    elif b.type == "local":
         p = "/" + b.path.strip().strip("/")
         if not b.path.strip().startswith("/") or ".." in p.split("/") or p == "/":
             raise HTTPException(400, "Enter a full folder path, for example /mnt/disk2/recordings")
@@ -99,6 +103,8 @@ def as_dict(s: Storage) -> dict:
 
 
 def location(d: dict) -> str:
+    if d["type"] == "recorder":
+        return d.get("path") or "default recording folder"
     if d["type"] == "local":
         return d["path"]
     if d["type"] == "nfs":
@@ -109,7 +115,8 @@ def location(d: dict) -> str:
 def load_storages() -> list[dict]:
     """Enabled storages with full settings (for mounting)."""
     with SessionLocal() as s:
-        return [as_dict(x) for x in s.query(Storage).filter(Storage.enabled.is_(True)).order_by(Storage.name)]
+        return [as_dict(x) for x in s.query(Storage).filter(Storage.enabled.is_(True)).order_by(Storage.name)
+                if x.type != "recorder"]       # recording servers record on their own machine
 
 
 def ensure_default():
@@ -155,6 +162,8 @@ def list_storage(p=Depends(require("viewer", allow_module=True))):
             d = as_dict(x)
             d.update(location=location(d), has_password=bool(d["password"]), password="",
                      cameras=counts.get(x.id, 0), mount_error=MOUNT_ERRORS.get(x.id, ""))
+            if x.type == "recorder":
+                d["recorder"] = recorder_view(x, p.get("role") == "admin")
             out.append(d)
         return out
 
@@ -164,12 +173,15 @@ async def add_storage(body: StorageIn, _=Depends(require("admin"))):
     b = validate(body)
     with SessionLocal() as s:
         sid = _slug(b.name, {x.id for x in s.query(Storage)})
+        cfg = {k: getattr(b, k) for k in CONFIG_KEYS}
+        if b.type == "recorder":
+            cfg = with_new_code({"path": b.path})
         s.add(Storage(id=sid, name=b.name, type=b.type, enabled=b.enabled, is_default=False,
-                      retention_days=b.retention_days, min_free_gb=b.min_free_gb,
-                      config={k: getattr(b, k) for k in CONFIG_KEYS}))
+                      retention_days=b.retention_days, min_free_gb=b.min_free_gb, config=cfg))
         s.commit()
-    await _apply()
-    return {"id": sid}
+    if b.type != "recorder":
+        await _apply()
+    return {"id": sid, "code": cfg.get("code")}
 
 
 @router.put("/storage/{sid}")
@@ -181,8 +193,10 @@ async def update_storage(sid: str, body: StorageIn, _=Depends(require("admin")))
             raise HTTPException(404)
         if x.is_default and not b.enabled:
             raise HTTPException(400, "The default storage cannot be disabled - make another one default first")
-        cfg = {k: getattr(b, k) for k in CONFIG_KEYS}
-        if not cfg["password"]:
+        if (x.type == "recorder") != (b.type == "recorder"):
+            raise HTTPException(400, "A recording server cannot be changed into a disk or share - add a new storage")
+        cfg = {**(x.config or {}), **{k: getattr(b, k) for k in CONFIG_KEYS}}
+        if not b.password:
             cfg["password"] = (x.config or {}).get("password", "")
         x.name, x.type, x.enabled, x.config = b.name, b.type, b.enabled, cfg
         x.retention_days, x.min_free_gb = b.retention_days, b.min_free_gb
@@ -200,6 +214,8 @@ async def make_default(sid: str, _=Depends(require("admin"))):
             raise HTTPException(404)
         if not x.enabled:
             raise HTTPException(400, "Enable the storage first")
+        if x.type == "recorder":
+            raise HTTPException(400, "A recording server cannot be the default - choose it per camera instead")
         for y in s.query(Storage):
             y.is_default = y.id == sid
         s.commit()
@@ -221,14 +237,29 @@ async def delete_storage(sid: str, _=Depends(require("admin"))):
         s.delete(x)
         s.commit()
     MOUNT_ERRORS.pop(sid, None)
+    RECORDER_STATUS.pop(sid, None)
     await _apply()
     return {"ok": True}
+
+
+@router.post("/storage/{sid}/pairing")
+def new_pairing_code(sid: str, _=Depends(require("admin"))):
+    """New one-time code to install (or reinstall) a recording server."""
+    with SessionLocal() as s:
+        x = s.get(Storage, sid)
+        if not x or x.type != "recorder":
+            raise HTTPException(404)
+        x.config = with_new_code(x.config or {})
+        s.commit()
+        return {"code": x.config["code"], "code_expires": x.config["code_expires"]}
 
 
 @router.post("/storage/test")
 async def test_storage(body: StorageIn, id: str | None = None, _=Depends(require("admin"))):
     """Mount the storage in a throw-away container and write a test file."""
     b = validate(body)
+    if b.type == "recorder":
+        raise HTTPException(400, "Recording servers are checked automatically once installed")
     st = {"id": "test", "type": b.type, **{k: getattr(b, k) for k in CONFIG_KEYS}}
     if id and not st["password"]:
         with SessionLocal() as s:

@@ -25,7 +25,8 @@ SEGMENT = int(os.environ.get("SEGMENT_SECONDS", "300"))
 m = EllalonModule(version="0.2.0")
 app = m.app
 recorders: dict[int, "Recorder"] = {}
-storages: dict[str, dict] = {}      # id -> settings from core (enabled storages)
+storages: dict[str, dict] = {}      # id -> settings from core (enabled local / network storages)
+remote_ids: set[str] = set()        # recording servers: their cameras are recorded on that machine
 stats: dict[str, dict] = {}         # id -> usage numbers
 fallback_warned: set[int] = set()
 
@@ -107,12 +108,15 @@ class Recorder:
 
 
 async def refresh_storages():
-    global storages
-    storages = {s["id"]: s for s in await m.api("GET", "/api/storage") if s["enabled"]}
+    global storages, remote_ids
+    enabled = [s for s in await m.api("GET", "/api/storage") if s["enabled"]]
+    remote_ids = {s["id"] for s in enabled if s["type"] == "recorder"}
+    storages = {s["id"]: s for s in enabled if s["type"] != "recorder"}
 
 
 async def sync_cameras():
-    cams = {c["id"]: c for c in await m.cameras() if c["enabled"] and c["record"]}
+    cams = {c["id"]: c for c in await m.cameras() if c["enabled"] and c["record"]
+            and (c.get("settings") or {}).get("storage_id") not in remote_ids}
     targets = {cid: target_for(cam) for cid, cam in cams.items()}
     for cid in list(recorders):
         r = recorders[cid]

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import settings
@@ -36,10 +36,11 @@ def decode(token: str) -> dict:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
 
 
-def current_principal(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict:
-    if not creds:
+def current_principal(request: Request, creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict:
+    token = creds.credentials if creds else request.cookies.get("ellalon_token", "")
+    if not token:   # the cookie lets <video> playback links authenticate
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing token")
-    return decode(creds.credentials)
+    return decode(token)
 
 
 def require(min_role: str = "viewer", allow_module: bool = False):

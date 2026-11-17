@@ -49,3 +49,5 @@ td button{padding:4px 10px;font-size:12px}
 .dot.wait{background:var(--warn)}.cstat{white-space:nowrap}#camSummary b{color:var(--text)}
 .bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:10px 0 4px}
 .bar span{display:block;height:100%;background:var(--info)}.bar span.full{background:var(--high)}
+pre.cmd{background:#000;padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:12px;margin:6px 0}
+.camlist{margin:6px 0 0;padding-left:16px;font-size:12px}.camlist .bad{color:var(--high)}

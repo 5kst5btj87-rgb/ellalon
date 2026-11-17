@@ -136,6 +136,8 @@ class DockerManager:
     def _storage_mounts(self, storages: list[dict]) -> tuple[dict, set]:
         mounts, remote = {}, set()
         for st in storages:
+            if st["type"] not in ("local", "smb", "nfs"):
+                continue
             target = {"bind": f"/storage/{st['id']}", "mode": "rw"}
             if st["type"] == "local":
                 mounts[st["path"]] = target

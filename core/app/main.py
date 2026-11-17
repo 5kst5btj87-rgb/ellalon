@@ -28,6 +28,7 @@ from .config import settings
 from .db import Camera, Event, ModuleState, SessionLocal, User, init_db
 from .docker_manager import DockerManager, cname
 from .registry import registry
+from .recorders import recorder_monitor, router as recorders_router
 from . import storage as storage_mod
 from .storage import ensure_default as ensure_default_storage, load_storages
 
@@ -117,7 +118,7 @@ async def lifespan(app: FastAPI):
     docker_mgr.ensure_network()
     storage_mod.hooks.update(apply=apply_storage, test=docker_mgr.test_storage)
     tasks = [asyncio.create_task(reconciler()), asyncio.create_task(bus.consume()),
-             asyncio.create_task(camera_monitor())]
+             asyncio.create_task(camera_monitor()), asyncio.create_task(recorder_monitor())]
     log.info("Ellalon core %s started", settings.version)
     yield
     for t in tasks:
@@ -339,6 +340,7 @@ def reload_manifests(_=Depends(require("admin"))):
 # brand templates, ONVIF discovery, batch add and copy-settings live in cameras.py
 app.include_router(cameras_router)
 app.include_router(storage_mod.router)
+app.include_router(recorders_router)
 
 
 # ---------------------------------------------------------------- events & C&C

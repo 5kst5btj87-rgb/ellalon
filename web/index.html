@@ -202,8 +202,9 @@
     <label>Type<select name="type" id="stType">
       <option value="local">Local disk / folder</option>
       <option value="smb">Network share - SMB (Windows, Synology, QNAP...)</option>
-      <option value="nfs">Network share - NFS</option></select></label>
-    <label class="st-local full">Folder on this server<input name="path" placeholder="/mnt/disk2/recordings"></label>
+      <option value="nfs">Network share - NFS</option>
+      <option value="recorder">Recording server - another Ubuntu or Windows machine</option></select></label>
+    <label class="st-path full"><span id="stPathLbl">Folder on this server</span><input name="path" placeholder="/mnt/disk2/recordings"></label>
     <label class="st-remote">Server (IP address)<input name="server" placeholder="192.168.1.20"></label>
     <label class="st-remote"><span id="stShareLbl">Share name</span><input name="share" placeholder="recordings"></label>
     <label class="st-smb">Username<input name="username" autocomplete="off"></label>
@@ -217,6 +218,19 @@
   <p class="muted small" id="stHelp"></p>
   <p id="stMsg" class="err"></p>
   <button type="button" class="ghost" data-close>Cancel</button> <button type="button" class="ghost" id="stTest">Test</button> <button>Save</button>
+</form></dialog>
+
+<dialog id="recDialog" class="wide"><form method="dialog">
+  <h3 id="recTitle">Install the recording server</h3>
+  <p class="small">Run <b>one</b> of these commands on the machine that will record. Pairing code <b id="recCode"></b> <span class="muted" id="recExp"></span></p>
+  <h4>Ubuntu / Debian <span class="muted small">(terminal)</span></h4>
+  <pre class="cmd" id="recUbuntu"></pre><button type="button" class="ghost" data-copy="recUbuntu">Copy</button>
+  <h4>Windows 10 / 11 / Server <span class="muted small">(PowerShell as Administrator)</span></h4>
+  <pre class="cmd" id="recWindows"></pre><button type="button" class="ghost" data-copy="recWindows">Copy</button>
+  <p class="muted small">The recorder must reach this server, and this server must reach the recorder on TCP 8090 for playback.
+  After installing, choose this recording server as <b>Recording storage</b> for the cameras it should record.
+  It starts automatically at boot and keeps recording from its saved camera list when this server is down.</p>
+  <button>Close</button>
 </form></dialog>
 
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>
