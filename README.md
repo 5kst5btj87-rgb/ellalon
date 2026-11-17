@@ -29,21 +29,16 @@ builds the images, starts everything and prints the web address and admin passwo
 
 Running the installer again on the same server upgrades it and keeps settings and data.
 
-### Online install (one command, from GitHub)
+### Online install (one command)
 
-The code lives in the private repository `5kst5btj87-rgb/ellalon`. Create a read-only token once:
-GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** →
-Generate new token → Repository access: *Only select repositories* → `ellalon` →
-Permissions → Repository permissions → **Contents: Read-only** → Generate. Then on the server:
+On the new server:
 
 ```bash
-curl -fsSL -H "Authorization: Bearer <TOKEN>" \
-  https://raw.githubusercontent.com/5kst5btj87-rgb/ellalon/main/install-online.sh \
-  | sudo bash -s -- --token <TOKEN>
+curl -fsSL https://raw.githubusercontent.com/5kst5btj87-rgb/ellalon/main/install-online.sh | sudo bash
 ```
 
-Installer options (`--port`, `--data`, ...) go after the token. The server remembers the token,
-so later updates are just `sudo ellalon update` (settings and data are kept).
+With options: `... | sudo bash -s -- --port 8080 --data /mnt/recordings`.
+Later updates are just `sudo ellalon update` (settings and data are kept).
 
 ### Offline installer (sites without internet)
 
