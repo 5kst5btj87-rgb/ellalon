@@ -119,7 +119,11 @@ fi
 UPGRADE=0; [[ -f "$DIR/.env" ]] && UPGRADE=1
 if [[ $UPGRADE -eq 1 ]]; then log "Upgrading the installation in $DIR to $VERSION"; else log "Installing Ellalon $VERSION to $DIR"; fi
 mkdir -p "$DIR"
-for d in core modules web sdk templates docs installer; do rm -rf "${DIR:?}/$d"; done
+# empty the code folders in place (running containers bind-mount these folders, so they must
+# keep their identity; deleting and recreating them would leave containers on stale copies)
+for d in core modules web sdk templates docs installer; do
+  [[ -d "$DIR/$d" ]] && find "$DIR/$d" -mindepth 1 -delete
+done
 cp -a "$SRC/." "$DIR/"
 rm -rf "$DIR/images"
 chmod +x "$DIR/ellalon.sh" "$DIR"/installer/*.sh
@@ -174,6 +178,8 @@ if [[ $START -eq 1 ]]; then
   # module containers are recreated by core from the (possibly new) images
   docker ps -aq --filter label=ellalon.module | xargs -r docker rm -f >/dev/null
   docker compose up -d --remove-orphans
+  # always restart core so it runs the new code and re-reads the module folders
+  docker compose up -d --force-recreate --no-deps core
   for _ in $(seq 90); do
     if docker compose exec -T core python -c \
         "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)" >/dev/null 2>&1; then
