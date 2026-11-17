@@ -8,6 +8,7 @@ import base64
 import datetime
 import hashlib
 import html
+import logging
 import os
 import re
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
@@ -22,6 +23,7 @@ from .bus import bus
 from .db import Camera, SessionLocal
 
 router = APIRouter(prefix="/api")
+log = logging.getLogger("cameras")
 
 # {ch} = channel number. "onvif": stream URLs are discovered from the device.
 BRANDS = {
@@ -197,6 +199,145 @@ async def onvif_stream_uris(ip: str, port: int, user: str, pw: str) -> list[str]
     return uris
 
 
+# ---------------------------------------------------------------- connection monitor
+CHECK_INTERVAL = int(os.environ.get("ELLALON_CAMERA_CHECK_INTERVAL", "30"))
+CAM_STATUS: dict[int, dict] = {}   # camera id -> {state, detail, checked, since}
+STATE_TEXT = {"online": "online", "offline": "offline", "auth": "wrong username or password",
+              "path": "wrong stream path", "error": "stream error"}
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _digest(challenge: str, user: str, pw: str, method: str, uri: str) -> str:
+    f = dict(re.findall(r'(\w+)="?([^",]+)"?', challenge))
+    realm, nonce, qop = f.get("realm", ""), f.get("nonce", ""), f.get("qop", "")
+    h = lambda x: hashlib.md5(x.encode()).hexdigest()
+    ha1, ha2 = h(f"{user}:{realm}:{pw}"), h(f"{method}:{uri}")
+    extra = ""
+    if "auth" in [q.strip() for q in qop.split(",")]:
+        nc, cnonce = "00000001", os.urandom(8).hex()
+        resp = h(f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}")
+        extra = f', qop=auth, nc={nc}, cnonce="{cnonce}"'
+    else:
+        resp = h(f"{ha1}:{nonce}:{ha2}")
+    out = f'Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{resp}"{extra}'
+    return out + (f', opaque="{f["opaque"]}"' if f.get("opaque") else "")
+
+
+async def _rtsp_describe(host: str, port: int, uri: str, auth: str | None, timeout: float):
+    r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+    try:
+        lines = [f"DESCRIBE {uri} RTSP/1.0", "CSeq: 2", "Accept: application/sdp", "User-Agent: Ellalon"]
+        if auth:
+            lines.append(f"Authorization: {auth}")
+        w.write(("\r\n".join(lines) + "\r\n\r\n").encode())
+        await w.drain()
+        head = (await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), timeout)).decode(errors="replace")
+        status_line, *rest = head.split("\r\n")
+        if not status_line.startswith("RTSP/"):
+            raise ValueError("not RTSP")
+        hdrs: dict[str, list[str]] = {}
+        for line in rest:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                hdrs.setdefault(k.strip().lower(), []).append(v.strip())
+        return int(status_line.split()[1]), hdrs
+    finally:
+        w.close()
+
+
+async def probe_url(url: str | None, timeout: float = 5) -> dict:
+    """Check a stream like a player would: connect, RTSP DESCRIBE, authenticate."""
+    p = urlsplit(url or "")
+    host = p.hostname
+    if not host:
+        return {"state": "error", "detail": "no stream address"}
+    rtsp = p.scheme.startswith("rtsp")
+    port = p.port or (554 if rtsp else 443 if p.scheme == "https" else 80)
+    if not rtsp:
+        try:
+            _, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+            w.close()
+            return {"state": "online", "detail": f"{host}:{port} answers"}
+        except Exception:
+            return {"state": "offline", "detail": f"no answer from {host}:{port}"}
+    user, pw = unquote(p.username or ""), unquote(p.password or "")
+    uri = urlunsplit((p.scheme, f"{host}:{port}", p.path or "/", p.query, ""))
+    try:
+        code, hdrs = await _rtsp_describe(host, port, uri, None, timeout)
+    except ConnectionRefusedError:
+        return {"state": "offline", "detail": f"{host} refuses port {port} (wrong RTSP port?)"}
+    except (OSError, asyncio.TimeoutError):
+        return {"state": "offline", "detail": f"no answer from {host}:{port}"}
+    except Exception as e:
+        return {"state": "error", "detail": f"not an RTSP stream ({e.__class__.__name__})"}
+    try:
+        if code == 401 and user:
+            challenges = hdrs.get("www-authenticate", [])
+            dig = next((c for c in challenges if c.lower().startswith("digest")), None)
+            auth = (_digest(dig, user, pw, "DESCRIBE", uri) if dig
+                    else "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode())
+            code, hdrs = await _rtsp_describe(host, port, uri, auth, timeout)
+    except Exception as e:
+        return {"state": "error", "detail": f"login failed ({e.__class__.__name__})"}
+    if code == 200:
+        return {"state": "online", "detail": "stream OK"}
+    if code in (401, 403):
+        return {"state": "auth", "detail": "wrong username or password" if user
+                else "camera needs a username and password"}
+    if code in (400, 404, 454):
+        return {"state": "path", "detail": f"stream not found (RTSP {code}) - check brand and channel"}
+    return {"state": "error", "detail": f"camera answered RTSP {code}"}
+
+
+async def _record(cid: int, name: str, res: dict):
+    prev = CAM_STATUS.get(cid)
+    same = prev and prev["state"] == res["state"]
+    CAM_STATUS[cid] = {**res, "checked": _now(), "since": prev["since"] if same else _now()}
+    if same or res["state"] == "disabled" or (prev and prev["state"] == "disabled" and res["state"] == "online"):
+        return
+    if res["state"] == "online":
+        if prev and prev["state"] not in ("checking",):
+            await bus.emit("core", "camera.online", {"camera": name}, "info", cid)
+    else:
+        await bus.emit("core", "camera.offline", {"camera": name, "reason": STATE_TEXT[res["state"]],
+                                                  "detail": res["detail"]}, "warning", cid)
+
+
+async def check_camera(cid: int):
+    with SessionLocal() as s:
+        c = s.get(Camera, cid)
+        if not c:
+            CAM_STATUS.pop(cid, None)
+            return
+        name, url, enabled = c.name, c.url, c.enabled
+    if not enabled:
+        CAM_STATUS[cid] = {"state": "disabled", "detail": "camera disabled", "checked": _now(), "since": _now()}
+        return
+    await _record(cid, name, await probe_url(url))
+
+
+async def camera_monitor():
+    sem = asyncio.Semaphore(10)
+
+    async def one(cid):
+        async with sem:
+            await check_camera(cid)
+
+    while True:
+        try:
+            with SessionLocal() as s:
+                ids = [c.id for c in s.query(Camera)]
+            for cid in [k for k in CAM_STATUS if k not in ids]:
+                CAM_STATUS.pop(cid)
+            await asyncio.gather(*(one(cid) for cid in ids))
+        except Exception as e:
+            log.warning("camera monitor: %s", e)
+        await asyncio.sleep(CHECK_INTERVAL)
+
+
 # ---------------------------------------------------------------- helpers
 def _pq(p) -> str:
     return p.path + (f"?{p.query}" if p.query else "")
@@ -232,6 +373,7 @@ def cam_dict(c: Camera, reveal: bool = True) -> dict:
     d = {k: getattr(c, k) for k in ("id", "name", "url", "substream_url", "location", "record",
                                     "analytics", "face_recognition", "enabled")}
     d["settings"] = settings_of(c).model_dump(exclude={"name", "url", "substream_url"})
+    d["status"] = CAM_STATUS.get(c.id, {"state": "checking", "detail": "first check in progress"})
     if not reveal:  # only admins and modules see credentials
         d["settings"]["password"] = ""
         d["url"], d["substream_url"] = _strip_creds(d["url"]), _strip_creds(d["substream_url"])
@@ -268,6 +410,7 @@ async def create_camera(body: CameraIn, _=Depends(require("admin"))):
         s.commit()
         out = cam_dict(c)
     await bus.broadcast("camera.changed", {"id": out["id"], "action": "created"})
+    asyncio.create_task(check_camera(out["id"]))
     return out
 
 
@@ -283,6 +426,8 @@ async def update_camera(cid: int, body: CameraIn, _=Depends(require("admin"))):
         s.commit()
         out = cam_dict(c)
     await bus.broadcast("camera.changed", {"id": cid, "action": "updated"})
+    CAM_STATUS.pop(cid, None)
+    asyncio.create_task(check_camera(cid))
     return out
 
 
@@ -296,6 +441,16 @@ async def delete_camera(cid: int, _=Depends(require("admin"))):
         s.commit()
     await bus.broadcast("camera.changed", {"id": cid, "action": "deleted"})
     return {"ok": True}
+
+
+@router.post("/cameras/probe")
+async def probe_camera(body: CameraIn, _=Depends(require("admin"))):
+    """Test a camera's settings before saving: builds the URLs and checks main + substream."""
+    main, sub = (body.url, body.substream_url) if body.url else await build_urls(body)
+    res = {"main": await probe_url(main)}
+    if sub:
+        res["sub"] = await probe_url(sub)
+    return res
 
 
 @router.post("/cameras/batch")
@@ -327,6 +482,8 @@ async def batch_create(body: BatchIn, _=Depends(require("admin"))):
         created = [cam_dict(r) for r in rows]
     if created:
         await bus.broadcast("camera.changed", {"action": "batch", "count": len(created)})
+        for c in created:
+            asyncio.create_task(check_camera(c["id"]))
     return {"created": created, "failed": failed}
 
 

@@ -46,3 +46,4 @@ textarea{background:var(--bg);color:var(--text);border:1px solid var(--line);bor
 .section{margin:22px 0 8px;font-size:15px}.sev.critical{background:var(--high);color:#fff}
 .fgrid .inline{display:flex;align-items:center;gap:6px;color:var(--text);font-size:13px}
 td button{padding:4px 10px;font-size:12px}
+.dot.wait{background:var(--warn)}.cstat{white-space:nowrap}#camSummary b{color:var(--text)}

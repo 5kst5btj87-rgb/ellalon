@@ -62,6 +62,7 @@ function connectWs() {
     $("#events").insertAdjacentHTML("afterbegin", eventRow(data));
     if (data.type === "wall.updated" && data.payload?.layout_data) applyWall(data.payload.layout_data);
     if (["high", "critical"].includes(data.severity)) flashCamera(data.camera_id);
+    if (data.type.startsWith("camera.") && !$("#tab-cameras").classList.contains("hidden")) loadCameras();
     if (data.source === "integrations" && !$("#tab-integrations").classList.contains("hidden")) refreshIntegrationsSoon();
     if (data.type.startsWith("incident.") && !$("#tab-incidents").classList.contains("hidden")) loadIncidents();
   };
@@ -256,6 +257,24 @@ $("#batchForm").onsubmit = async (e) => {
   } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
 };
 
+const CAM_STATE = { online: ["ok", "Online"], offline: ["bad", "Offline"], auth: ["bad", "Wrong user/password"],
+  path: ["bad", "Wrong stream path"], error: ["bad", "Stream error"], checking: ["wait", "Checking…"], disabled: ["", "Disabled"] };
+const camStateHtml = (st) => {
+  const [cls, text] = CAM_STATE[st?.state] || CAM_STATE.checking;
+  const since = st?.since ? ` · since ${new Date(st.since).toLocaleString()}` : "";
+  return `<span class="cstat" title="${esc((st?.detail || "") + since)}"><span class="dot ${cls}"></span> ${text}</span>`;
+};
+$("#camTest").onclick = async () => {
+  const msg = $("#camMsg"); msg.className = "muted"; msg.textContent = "Testing connection…";
+  try {
+    const r = await api("/api/cameras/probe", { method: "POST", body: formData($("#camEdit")) });
+    const line = (n, x) => `${n}: ${CAM_STATE[x.state]?.[1] || x.state} - ${x.detail}`;
+    msg.className = r.main.state === "online" && (!r.sub || r.sub.state === "online") ? "ok" : "err";
+    msg.textContent = line("Main stream", r.main) + (r.sub ? "   ·   " + line("Substream", r.sub) : "");
+  } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
+};
+setInterval(() => { if (token && !$("#tab-cameras").classList.contains("hidden")) loadCameras(); }, 15000);
+
 async function loadCameras() {
   cameras = await api("/api/cameras");
   await loadBrands().catch(() => {});
@@ -263,10 +282,12 @@ async function loadCameras() {
   const label = (id) => brands.find((b) => b.id === id)?.label.replace(/ \(.*\)$/, "") || id || "";
   $("#camAdd").classList.toggle("hidden", !admin); $("#camBatch").classList.toggle("hidden", !admin);
   $("#cameras").innerHTML = cameras.map((c) => { const s = c.settings || {}, onv = ["onvif", "flir"].includes(s.brand);
-    return `<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(label(s.brand))}</td><td>${esc(s.ip)}</td><td>${onv ? "–" : esc(s.channel)}</td>
+    return `<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${camStateHtml(c.status)}</td><td>${esc(label(s.brand))}</td><td>${esc(s.ip)}</td><td>${onv ? "–" : esc(s.channel)}</td>
     <td>${esc(c.location || "")}</td><td>${yes(c.substream_url)}</td><td>${yes(c.record)}</td><td>${yes(c.analytics)}</td><td>${yes(c.face_recognition)}</td>
     <td>${admin ? `<button class="ghost" onclick="editCam(${c.id})">Edit</button> <button class="danger" onclick="delCam(${c.id})">Delete</button>` : ""}</td></tr>`; }).join("")
-    || `<tr><td colspan=11 class="muted">No cameras yet</td></tr>`;
+    || `<tr><td colspan=12 class="muted">No cameras yet</td></tr>`;
+  const n = (k) => cameras.filter((c) => c.status?.state === k).length, bad = cameras.filter((c) => ["offline", "auth", "path", "error"].includes(c.status?.state)).length;
+  $("#camSummary").innerHTML = cameras.length ? `<b>${n("online")}</b> online · <b>${bad}</b> with problems${n("checking") ? ` · ${n("checking")} checking` : ""}` : "";
 }
 window.delCam = async (id) => { if (confirm("Delete camera?")) { await api(`/api/cameras/${id}`, { method: "DELETE" }); loadCameras(); } };
 

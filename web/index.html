@@ -67,9 +67,10 @@
       <div class="toolbar">
         <button id="camAdd">+ Add camera</button>
         <button id="camBatch" class="ghost">Batch add</button>
+        <span id="camSummary" class="muted"></span>
         <span class="muted">Click Edit to change a camera or copy its settings to other cameras.</span>
       </div>
-      <table><thead><tr><th>#</th><th>Name</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
+      <table><thead><tr><th>#</th><th>Name</th><th>Status</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
     </div>
 
     <div id="tab-integrations" class="tab hidden">
@@ -124,7 +125,7 @@
     <button type="button" class="ghost" id="copyApply">Save &amp; copy to selected</button>
   </div>
   <p id="camMsg" class="err"></p>
-  <button type="button" class="ghost" data-close>Cancel</button> <button>Save</button>
+  <button type="button" class="ghost" data-close>Cancel</button> <button type="button" class="ghost" id="camTest">Test connection</button> <button>Save</button>
 </form></dialog>
 
 <dialog id="batchDialog" class="wide"><form id="batchForm">
