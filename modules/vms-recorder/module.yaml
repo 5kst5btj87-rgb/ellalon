@@ -1,18 +1,14 @@
 name: vms-recorder
 display_name: VMS Recorder
-version: 0.1.0
+version: 0.2.0
 category: recording
-description: Continuous RTSP recording to segmented MP4 (stream copy, no transcoding) with retention.
+description: Continuous RTSP recording to segmented MP4 (stream copy, no transcoding) on local or network storage, with retention per storage.
 image: ellalon/vms-recorder:0.1.0
 autostart: true
 http_port: 8000
 env:
   SEGMENT_SECONDS: "300"
-  RETENTION_DAYS: "30"
-  MIN_FREE_GB: "20"
-volumes:
-  - host: recordings
-    container: /recordings
+storage_mounts: true      # every storage from the Storage tab is mounted at /storage/<id>
 health:
   type: heartbeat
-capabilities: [recording, playback, export]
+capabilities: [recording, playback, export, multi-storage]

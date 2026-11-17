@@ -40,6 +40,7 @@ class ModuleSpec(BaseModel):
     command: list[str] | None = None
     health: HealthSpec = Field(default_factory=HealthSpec)
     capabilities: list[str] = Field(default_factory=list)  # advertised to clients
+    storage_mounts: bool = False   # mount every recording storage at /storage/<id>
 
 
 class Registry:

@@ -28,6 +28,8 @@ from .config import settings
 from .db import Camera, Event, ModuleState, SessionLocal, User, init_db
 from .docker_manager import DockerManager, cname
 from .registry import registry
+from . import storage as storage_mod
+from .storage import ensure_default as ensure_default_storage, load_storages
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("core")
@@ -61,7 +63,7 @@ async def reconcile_once():
             st = await asyncio.to_thread(docker_mgr.status, name)
             if st["state"] != "running":
                 log.info("Reconcile: starting %s (was %s)", name, st["state"])
-                await asyncio.to_thread(docker_mgr.start, spec, states[name].config)
+                await asyncio.to_thread(docker_mgr.start, spec, states[name].config, storages_for(spec))
                 await bus.emit("core", "module.started", {"module": name})
             last_error.pop(name, None)
         except Exception as e:
@@ -81,6 +83,19 @@ async def reconcile_once():
             await asyncio.to_thread(docker_mgr.stop, name)
 
 
+def storages_for(spec):
+    return load_storages() if spec.storage_mounts else None
+
+
+async def apply_storage():
+    """Storage settings changed: recreate modules that mount storages (reconciler restarts them)."""
+    for name, spec in registry.modules.items():
+        if spec.storage_mounts:
+            await asyncio.to_thread(docker_mgr.remove, name)
+    await bus.broadcast("storage.changed", {})
+    asyncio.create_task(reconcile_once())
+
+
 async def reconciler():
     while True:
         try:
@@ -94,11 +109,13 @@ async def reconciler():
 async def lifespan(app: FastAPI):
     global docker_mgr
     init_db()
+    ensure_default_storage()
     ensure_admin()
     registry.load()
     sync_module_states()
     docker_mgr = DockerManager()
     docker_mgr.ensure_network()
+    storage_mod.hooks.update(apply=apply_storage, test=docker_mgr.test_storage)
     tasks = [asyncio.create_task(reconciler()), asyncio.create_task(bus.consume()),
              asyncio.create_task(camera_monitor())]
     log.info("Ellalon core %s started", settings.version)
@@ -258,7 +275,8 @@ async def enable_module(name: str, _=Depends(require("admin"))):
         set_enabled(dep, True)
     try:
         for dep in registry.start_order([name]):
-            await asyncio.to_thread(docker_mgr.start, registry.modules[dep], desired_states()[dep].config)
+            await asyncio.to_thread(docker_mgr.start, registry.modules[dep], desired_states()[dep].config,
+                                    storages_for(registry.modules[dep]))
     except Exception as e:
         raise HTTPException(500, str(e))
     await bus.emit("core", "module.enabled", {"module": spec.name})
@@ -286,7 +304,7 @@ async def recreate_module(name: str, _=Depends(require("admin"))):
     """Remove + create again (after an image upgrade or config change)."""
     spec = get_spec(name)
     await asyncio.to_thread(docker_mgr.remove, name)
-    await asyncio.to_thread(docker_mgr.start, spec, desired_states()[name].config)
+    await asyncio.to_thread(docker_mgr.start, spec, desired_states()[name].config, storages_for(spec))
     return {"ok": True}
 
 
@@ -320,6 +338,7 @@ def reload_manifests(_=Depends(require("admin"))):
 # ---------------------------------------------------------------- cameras
 # brand templates, ONVIF discovery, batch add and copy-settings live in cameras.py
 app.include_router(cameras_router)
+app.include_router(storage_mod.router)
 
 
 # ---------------------------------------------------------------- events & C&C

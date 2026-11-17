@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import settings
@@ -57,6 +57,19 @@ class ModuleState(Base):
     name: Mapped[str] = mapped_column(String(64), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     config: Mapped[dict] = mapped_column(JSON, default=dict)  # env overrides from UI
+
+
+class Storage(Base):
+    """Where recordings are kept: local folder or network share (see storage.py)."""
+    __tablename__ = "storage"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    type: Mapped[str] = mapped_column(String(10), default="local")     # local | smb | nfs
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    retention_days: Mapped[int] = mapped_column(Integer, default=30)
+    min_free_gb: Mapped[float] = mapped_column(Float, default=20)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 def init_db():

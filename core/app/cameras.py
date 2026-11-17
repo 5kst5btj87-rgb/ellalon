@@ -41,7 +41,7 @@ BRANDS = {
     "rtsp": {"label": "Generic RTSP (custom path)", "custom": True},
 }
 STRUCT = ["brand", "ip", "port", "onvif_port", "username", "password", "channel",
-          "main_path", "sub_path", "use_substream"]
+          "main_path", "sub_path", "use_substream", "storage_id"]
 COPY_GROUPS = {
     "brand": ["brand", "port", "onvif_port", "main_path", "sub_path"],
     "credentials": ["username", "password"],
@@ -51,6 +51,7 @@ COPY_GROUPS = {
     "face_recognition": ["face_recognition"],
     "location": ["location"],
     "enabled": ["enabled"],
+    "storage": ["storage_id"],
 }
 
 
@@ -70,6 +71,7 @@ class CamSettings(BaseModel):
     analytics: bool = False
     face_recognition: bool = False
     enabled: bool = True
+    storage_id: str | None = None       # recording storage (None = default storage)
 
 
 class CameraIn(CamSettings):

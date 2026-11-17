@@ -28,6 +28,7 @@
       <a data-tab="playback">Playback</a>
       <a data-tab="cameras">Cameras</a>
       <a data-tab="integrations">Integrations</a>
+      <a data-tab="storage">Storage</a>
       <a data-tab="modules">System</a>
     </nav>
     <span id="who" class="muted"></span>
@@ -84,6 +85,14 @@
       <table><thead><tr><th>System</th><th>Type</th><th>#</th><th>Name</th><th>State</th><th>Cameras</th><th></th></tr></thead><tbody id="intDevices"></tbody></table>
     </div>
 
+    <div id="tab-storage" class="tab hidden">
+      <div class="toolbar">
+        <button id="stAdd">+ Add storage</button>
+        <span class="muted">Where recordings are kept. Cameras record to the default storage unless you choose another one in the camera's settings.</span>
+      </div>
+      <div id="stList" class="grid-cards"></div>
+    </div>
+
     <div id="tab-modules" class="tab hidden">
       <div class="toolbar"><button id="reload" class="ghost">Rescan modules</button><span class="muted">Each module is its own container managed by core.</span></div>
       <div id="modules" class="grid-cards"></div>
@@ -98,6 +107,7 @@
   <div class="fgrid">
     <label>Name<input name="name" required></label>
     <label>Location<input name="location"></label>
+    <label>Recording storage<select name="storage_id" class="storageSel"></select></label>
     <label>Brand<select name="brand" class="brandSel"></select></label>
     <label>IP address<input name="ip" required placeholder="192.168.1.64"></label>
     <label class="rtspOnly">RTSP port<input name="port" type="number" value="554"></label>
@@ -133,6 +143,7 @@
   <div class="fgrid">
     <label>Brand<select name="brand" class="brandSel"></select></label>
     <label>Location<input name="location"></label>
+    <label>Recording storage<select name="storage_id" class="storageSel"></select></label>
     <label class="full">IP addresses<textarea name="ips" rows="4" required placeholder="One per line or comma separated. Ranges allowed:&#10;192.168.1.64&#10;192.168.1.70-79"></textarea></label>
     <label class="chOnly">Channels<input name="channels" value="1" placeholder="1  or  1-16 for an NVR"></label>
     <label class="rtspOnly">RTSP port<input name="port" type="number" value="554"></label>
@@ -182,6 +193,30 @@
   <p class="muted small">On alarm these cameras are attached to the incident and pushed to the video wall.</p>
   <div class="checks" id="linkCams"></div>
   <button type="button" class="ghost" data-close>Cancel</button> <button>Save</button>
+</form></dialog>
+
+<dialog id="stDialog" class="wide"><form id="stForm">
+  <h3 id="stTitle">Add storage</h3>
+  <div class="fgrid">
+    <label>Name<input name="name" required placeholder="NAS - building A"></label>
+    <label>Type<select name="type" id="stType">
+      <option value="local">Local disk / folder</option>
+      <option value="smb">Network share - SMB (Windows, Synology, QNAP...)</option>
+      <option value="nfs">Network share - NFS</option></select></label>
+    <label class="st-local full">Folder on this server<input name="path" placeholder="/mnt/disk2/recordings"></label>
+    <label class="st-remote">Server (IP address)<input name="server" placeholder="192.168.1.20"></label>
+    <label class="st-remote"><span id="stShareLbl">Share name</span><input name="share" placeholder="recordings"></label>
+    <label class="st-smb">Username<input name="username" autocomplete="off"></label>
+    <label class="st-smb">Password<input name="password" type="password" autocomplete="new-password"></label>
+    <label class="st-smb">Domain (optional)<input name="domain"></label>
+    <label class="st-remote">Extra mount options (advanced)<input name="options" placeholder="e.g. vers=2.1"></label>
+    <label>Keep recordings (days)<input name="retention_days" type="number" min="1" value="30"></label>
+    <label>Always keep free (GB)<input name="min_free_gb" type="number" min="0" step="1" value="20"></label>
+  </div>
+  <div class="checks"><label><input type="checkbox" name="enabled" checked> Enabled</label></div>
+  <p class="muted small" id="stHelp"></p>
+  <p id="stMsg" class="err"></p>
+  <button type="button" class="ghost" data-close>Cancel</button> <button type="button" class="ghost" id="stTest">Test</button> <button>Save</button>
 </form></dialog>
 
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>

@@ -61,6 +61,21 @@ sudo tar -xzf ellalon-modules-<date>.tar.gz -C /var/lib/ellalon/modules && sudo 
 
 Copy recordings separately if you need them (`/var/lib/ellalon/modules/vms-recorder/recordings`).
 
+## Recording storage
+
+Web UI → **Storage**: add where recordings are kept.
+
+| Type | Example | Notes |
+|---|---|---|
+| Local disk / folder | `/mnt/disk2/recordings` | any folder on the server, e.g. a second disk |
+| SMB share | `//192.168.1.20/recordings` | Windows shares, Synology, QNAP; user needs read/write |
+| NFS share | `192.168.1.20:/volume1/recordings` | allow the server's IP with read/write on the NAS |
+
+Each storage has its own *keep days* and *keep free GB*. Cameras record to the default storage,
+or to the one chosen in the camera's settings (Cameras → Edit → Recording storage; can be copied
+to other cameras). If a network share is down, its cameras record to the default storage until
+it is back. **Test** checks the connection and write access before saving.
+
 ## Everyday commands
 
 | | |

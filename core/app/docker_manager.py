@@ -1,13 +1,15 @@
 """Thin layer over the Docker API: core uses this to run every module container."""
 import logging
+import re
 
 import docker
-from docker.errors import ImageNotFound, NotFound
+from docker.errors import APIError, ContainerError, ImageNotFound, NotFound
 from docker.types import DeviceRequest
 
 from .auth import module_token
 from .config import settings
 from .registry import ModuleSpec
+from .storage import MOUNT_ERRORS, mount_options, redact
 
 log = logging.getLogger("docker")
 LABEL = "ellalon.module"
@@ -65,7 +67,7 @@ class DockerManager:
                     f"Image {spec.image} not found locally and pull failed. "
                     f"Build it with: ./ellalon.sh build {spec.name}") from e
 
-    def start(self, spec: ModuleSpec, overrides: dict | None = None):
+    def start(self, spec: ModuleSpec, overrides: dict | None = None, storages: list[dict] | None = None):
         c = self.get(spec.name)
         if c:
             if c.status != "running":
@@ -108,8 +110,92 @@ class DockerManager:
             kwargs["shm_size"] = spec.shm_size
         if spec.gpu:
             kwargs["device_requests"] = [DeviceRequest(count=-1, capabilities=[["gpu"]])]
+        remote = set()
+        if spec.storage_mounts:
+            mounts, remote = self._storage_mounts(storages or [])
+            volumes.update(mounts)
         log.info("Creating container for %s", spec.name)
-        self.client.containers.run(spec.image, **kwargs)
+        while True:
+            try:
+                self.client.containers.run(spec.image, **kwargs)
+                break
+            except APIError as e:
+                # a network share that cannot be mounted must not stop recording to the others
+                bad = set(re.findall(r"ellalon-storage-([a-z0-9-]+)", str(e))) & remote
+                if not bad:
+                    raise
+                for sid in bad:
+                    MOUNT_ERRORS[sid] = "Cannot connect: " + redact(str(e).split("failed to mount")[-1])[-300:]
+                    volumes.pop(f"ellalon-storage-{sid}", None)
+                    remote.discard(sid)
+                    log.warning("storage %s not mounted: %s", sid, MOUNT_ERRORS[sid])
+                self.remove(spec.name)
+        for sid in remote:
+            MOUNT_ERRORS.pop(sid, None)
+
+    def _storage_mounts(self, storages: list[dict]) -> tuple[dict, set]:
+        mounts, remote = {}, set()
+        for st in storages:
+            target = {"bind": f"/storage/{st['id']}", "mode": "rw"}
+            if st["type"] == "local":
+                mounts[st["path"]] = target
+                continue
+            name = f"ellalon-storage-{st['id']}"
+            try:
+                opts = mount_options(st)
+            except ValueError as e:
+                MOUNT_ERRORS[st["id"]] = str(e)
+                continue
+            try:                      # recreate so changed settings take effect
+                self.client.volumes.get(name).remove(force=True)
+            except NotFound:
+                pass
+            except APIError:
+                pass
+            self.client.volumes.create(name=name, driver="local", driver_opts=opts,
+                                       labels={"ellalon.storage": st["id"]})
+            mounts[name] = target
+            remote.add(st["id"])
+        return mounts, remote
+
+    def test_storage(self, st: dict) -> dict:
+        """Mount a storage in a throw-away container, write a test file, report free space."""
+        vol = None
+        try:
+            if st["type"] == "local":
+                mounts = {st["path"]: {"bind": "/t", "mode": "rw"}}
+            else:
+                vol = "ellalon-storage-probe"
+                try:
+                    self.client.volumes.get(vol).remove(force=True)
+                except (NotFound, APIError):
+                    pass
+                self.client.volumes.create(name=vol, driver="local", driver_opts=mount_options(st))
+                mounts = {vol: {"bind": "/t", "mode": "rw"}}
+            out = self.client.containers.run(
+                f"ellalon/core:{settings.version}",
+                ["sh", "-c", "touch /t/.ellalon-write-test && rm -f /t/.ellalon-write-test && df -Pk /t | tail -1"],
+                volumes=mounts, remove=True, network_mode="none")
+            f = out.decode().split()
+            return {"ok": True, "total_gb": round(int(f[1]) / 1048576, 1),
+                    "free_gb": round(int(f[3]) / 1048576, 1), "detail": "writable"}
+        except ValueError as e:
+            return {"ok": False, "detail": str(e)}
+        except ContainerError as e:
+            return {"ok": False, "detail": "Connected, but cannot write: "
+                    + redact((e.stderr or b"").decode(errors="replace").strip()[-200:])}
+        except APIError as e:
+            msg = redact(str(e))
+            hint = (" - check username/password and share permissions" if "permission denied" in msg.lower()
+                    else " - check the server address and share/export name" if "no such" in msg.lower()
+                    or "not found" in msg.lower() else "")
+            return {"ok": False, "detail": "Cannot connect: " + msg.split("failed to mount")[-1][-250:] + hint}
+        finally:
+            if vol:
+                try:
+                    self.client.volumes.get(vol).remove(force=True)
+                except Exception:
+                    pass
 
     def stop(self, name: str):
         c = self.get(name)

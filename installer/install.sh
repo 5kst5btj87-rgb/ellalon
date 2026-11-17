@@ -103,6 +103,14 @@ install_docker() {
 }
 install_docker
 
+# helpers for network recording storage (SMB / NFS shares in the Storage tab)
+if command -v apt-get >/dev/null && ! dpkg -s cifs-utils nfs-common >/dev/null 2>&1; then
+  log "Installing network storage support (SMB, NFS)"
+  { apt-get install -y -qq cifs-utils nfs-common >/dev/null 2>&1 ||
+    { apt-get update -qq && apt-get install -y -qq cifs-utils nfs-common >/dev/null; }; } ||
+    warn "Could not install cifs-utils / nfs-common - network storage may not work"
+fi
+
 if [[ $GPU -eq 1 ]]; then
   log "Installing NVIDIA Container Toolkit (the NVIDIA driver must already be installed)"
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \

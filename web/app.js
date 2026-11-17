@@ -47,7 +47,7 @@ document.querySelectorAll("nav a").forEach((a) => (a.onclick = () => show(a.data
 function show(tab) {
   document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== "tab-" + tab));
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, playback: loadPlayback }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, storage: loadStorageTab, playback: loadPlayback }[tab] || (() => {}))();
 }
 
 // ---------------------------------------------------------------- live events
@@ -136,8 +136,8 @@ $("#pbLoad").onclick = async () => {
 // ---------------------------------------------------------------- cameras
 let brands = [], editing = null;
 const COPY_FIELDS = [["brand", "Brand & ports"], ["credentials", "Username & password"], ["substream", "Substream on/off"],
-  ["recording", "Recording"], ["analytics", "Analytics"], ["face_recognition", "Face recognition"], ["location", "Location"], ["enabled", "Enabled"]];
-const F_STR = ["name", "location", "brand", "ip", "username", "password", "main_path", "sub_path"];
+  ["recording", "Recording"], ["analytics", "Analytics"], ["face_recognition", "Face recognition"], ["location", "Location"], ["enabled", "Enabled"], ["storage", "Recording storage"]];
+const F_STR = ["name", "location", "brand", "ip", "username", "password", "main_path", "sub_path", "storage_id"];
 const F_NUM = ["port", "onvif_port", "channel", "start_number"];
 const F_BOOL = ["use_substream", "record", "analytics", "face_recognition", "enabled"];
 const el = (f, k) => f.elements.namedItem(k);
@@ -150,6 +150,8 @@ async function loadBrands() {
     if (!s.options.length) s.innerHTML = brands.map((b) => `<option value="${b.id}">${esc(b.label)}</option>`).join("");
     s.onchange = () => brandUi(s.form);
   });
+  await loadStorages().catch(() => {});
+  document.querySelectorAll(".storageSel").forEach((sel) => storageOptions(sel, sel.value));
 }
 function brandUi(form) {
   const b = brands.find((x) => x.id === el(form, "brand").value) || {};
@@ -164,6 +166,7 @@ function formData(form) {
   for (const k of F_NUM) { const e = el(form, k); if (e && e.value !== "") o[k] = +e.value; }
   for (const k of F_BOOL) { const e = el(form, k); if (e) o[k] = e.checked; }
   if (o.location === "") o.location = null;
+  if (o.storage_id === "") o.storage_id = null;
   return o;
 }
 function fillForm(form, s) {
@@ -424,6 +427,97 @@ $("#linkForm").onsubmit = async (e) => {
   const ids = [...$("#linkCams").querySelectorAll("input:checked")].map((i) => +i.value);
   try { await imod(`/devices/${encodeURIComponent(linkDevice.id)}/cameras`, { method: "PUT", body: { cameras: ids } }); $("#linkDialog").close(); loadIntegrations(); }
   catch (err) { alert(errText(err)); }
+};
+
+// ---------------------------------------------------------------- storage
+let storages = [], stEditing = null;
+const ST_TYPE = { local: "Local disk / folder", smb: "SMB share", nfs: "NFS share" };
+const ST_FIELDS = ["name", "type", "path", "server", "share", "username", "password", "domain", "options"];
+const gb = (x) => (x == null ? "?" : x >= 1000 ? (x / 1000).toFixed(1) + " TB" : x.toFixed(x < 10 ? 1 : 0) + " GB");
+async function loadStorages() { storages = await api("/api/storage"); return storages; }
+function storageOptions(sel, current) {
+  const def = storages.find((s) => s.is_default);
+  sel.innerHTML = `<option value="">Default storage${def ? ` (${esc(def.name)})` : ""}</option>` +
+    storages.filter((s) => s.enabled).map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+  sel.value = current && storages.some((s) => s.id === current) ? current : "";
+}
+async function loadStorageTab() {
+  try { await loadStorages(); } catch { return; }
+  let stat = {};
+  try { stat = await mod("vms-recorder", "/storage"); } catch {}
+  const admin = me.role === "admin";
+  $("#stAdd").classList.toggle("hidden", !admin);
+  $("#stList").innerHTML = storages.map((s) => {
+    const x = stat[s.id] || {}, used = x.total_gb ? 100 - (x.free_gb / x.total_gb) * 100 : 0;
+    const st = !s.enabled ? ["", "Disabled"] : s.mount_error || x.mounted === false ? ["bad", "Not connected"]
+      : x.writable === false ? ["bad", "Cannot write"] : x.mounted ? ["ok", "Connected"] : ["wait", "Checking…"];
+    return `<div class="card mod">
+      <h3><span class="dot ${st[0]}"></span> ${esc(s.name)} ${s.is_default ? '<span class="sev low">default</span>' : ""}</h3>
+      <div class="muted">${ST_TYPE[s.type] || s.type} · ${esc(s.location)}</div>
+      ${s.mount_error ? `<p class="err small">${esc(s.mount_error)}</p>` : ""}
+      ${x.total_gb ? `<div class="bar"><span class="${used > 90 ? "full" : ""}" style="width:${used.toFixed(0)}%"></span></div>
+        <div class="small muted">${gb(x.free_gb)} free of ${gb(x.total_gb)} · recordings ${gb(x.recordings_gb || 0)}${x.oldest ? " · oldest " + new Date(x.oldest).toLocaleDateString() : ""}</div>` : ""}
+      <p class="small">${st[1]} · ${s.cameras} camera(s) · keep ${s.retention_days} days · keep ${s.min_free_gb} GB free</p>
+      ${admin ? `<div class="actions"><button class="ghost" onclick="stEdit('${s.id}')">Edit</button>
+        ${s.is_default ? "" : `<button class="ghost" onclick="stDefault('${s.id}')">Make default</button> <button class="danger" onclick="stDelete('${s.id}')">Delete</button>`}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+function stTypeUi() {
+  const t = $("#stType").value, f = $("#stForm");
+  f.querySelectorAll(".st-local").forEach((e) => e.classList.toggle("hidden", t !== "local"));
+  f.querySelectorAll(".st-remote").forEach((e) => e.classList.toggle("hidden", t === "local"));
+  f.querySelectorAll(".st-smb").forEach((e) => e.classList.toggle("hidden", t !== "smb"));
+  $("#stShareLbl").textContent = t === "nfs" ? "Export path" : "Share name (optionally /folder)";
+  el(f, "share").placeholder = t === "nfs" ? "/volume1/recordings" : "recordings";
+  $("#stHelp").textContent = {
+    local: "A folder on this server, for example a second disk mounted at /mnt/disk2. The folder is created if it does not exist.",
+    smb: "A Windows file share or NAS share. The user needs read and write permission on the share. Use the server's IP address.",
+    nfs: "An NFS export. On the NAS, allow this server's IP address with read/write access.",
+  }[t];
+}
+$("#stType").onchange = stTypeUi;
+function stBody() {
+  const f = $("#stForm"), b = {};
+  for (const k of ST_FIELDS) b[k] = el(f, k).value.trim();
+  b.retention_days = +el(f, "retention_days").value || 30;
+  b.min_free_gb = +el(f, "min_free_gb").value || 0;
+  b.enabled = el(f, "enabled").checked;
+  return b;
+}
+$("#stAdd").onclick = () => {
+  stEditing = null; const f = $("#stForm"); f.reset(); el(f, "password").placeholder = "";
+  $("#stTitle").textContent = "Add storage"; $("#stMsg").textContent = ""; stTypeUi(); $("#stDialog").showModal();
+};
+window.stEdit = (id) => {
+  const s = storages.find((x) => x.id === id), f = $("#stForm"); stEditing = s; f.reset();
+  for (const k of ST_FIELDS) if (s[k] != null) el(f, k).value = s[k];
+  el(f, "password").value = ""; el(f, "password").placeholder = s.has_password ? "(unchanged)" : "";
+  el(f, "retention_days").value = s.retention_days; el(f, "min_free_gb").value = s.min_free_gb; el(f, "enabled").checked = s.enabled;
+  $("#stTitle").textContent = "Edit " + s.name; $("#stMsg").textContent = ""; stTypeUi(); $("#stDialog").showModal();
+};
+$("#stTest").onclick = async () => {
+  const msg = $("#stMsg"); msg.className = "muted"; msg.textContent = "Testing: connecting and writing a test file…";
+  try {
+    const r = await api("/api/storage/test" + (stEditing ? `?id=${encodeURIComponent(stEditing.id)}` : ""), { method: "POST", body: stBody() });
+    msg.className = r.ok ? "ok" : "err";
+    msg.textContent = r.ok ? `OK - connected and writable, ${gb(r.free_gb)} free of ${gb(r.total_gb)}` : r.detail;
+  } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
+};
+$("#stForm").onsubmit = async (e) => {
+  e.preventDefault(); const msg = $("#stMsg"); msg.className = "muted"; msg.textContent = "Saving…";
+  try {
+    await (stEditing ? api(`/api/storage/${stEditing.id}`, { method: "PUT", body: stBody() }) : api("/api/storage", { method: "POST", body: stBody() }));
+    $("#stDialog").close(); loadStorageTab(); setTimeout(loadStorageTab, 20000);
+  } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
+};
+window.stDefault = async (id) => {
+  try { await api(`/api/storage/${id}/default`, { method: "POST" }); loadStorageTab(); setTimeout(loadStorageTab, 20000); }
+  catch (err) { alert(errText(err)); }
+};
+window.stDelete = async (id) => {
+  if (!confirm("Delete this storage? Recordings already saved on it are not deleted.")) return;
+  try { await api(`/api/storage/${id}`, { method: "DELETE" }); loadStorageTab(); } catch (err) { alert(errText(err)); }
 };
 
 // ---------------------------------------------------------------- system / modules
