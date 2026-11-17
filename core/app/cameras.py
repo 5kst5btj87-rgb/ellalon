@@ -33,8 +33,9 @@ BRANDS = {
               "sub": "/cam/realmonitor?channel={ch}&subtype=1"},
     "axis": {"label": "Axis", "main": "/axis-media/media.amp?camera={ch}",
              "sub": "/axis-media/media.amp?camera={ch}&resolution=640x360"},
-    "provision": {"label": "Provision-ISR", "main": "/chID={ch}&streamType=main&linkType=tcp",
-                  "sub": "/chID={ch}&streamType=sub&linkType=tcp"},
+    "provision": {"label": "Provision-ISR camera", "main": "/profile1", "sub": "/profile2"},
+    "provision_nvr": {"label": "Provision-ISR NVR / DVR", "main": "/chID={ch}&streamType=main&linkType=tcp",
+                      "sub": "/chID={ch}&streamType=sub&linkType=tcp"},
     "flir": {"label": "FLIR (auto-detect via ONVIF)", "onvif": True},
     "onvif": {"label": "ONVIF (auto-detect)", "onvif": True},
     "rtsp": {"label": "Generic RTSP (custom path)", "custom": True},
@@ -143,14 +144,25 @@ _PWD = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-p
 _B64 = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"
 
 
-def _envelope(body: str, user: str, pw: str) -> str:
+class _OnvifAuthError(Exception):
+    pass
+
+
+def _envelope(body: str, user: str, pw: str, mode: str = "digest", offset: float = 0) -> str:
+    """mode: digest (WS-Security PasswordDigest), text (PasswordText) or none (HTTP auth only).
+    offset: seconds to add to our clock so the timestamp matches the camera's clock."""
     hdr = ""
-    if user:
+    if user and mode != "none":
         nonce = os.urandom(16)
-        created = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        digest = base64.b64encode(hashlib.sha1(nonce + created.encode() + pw.encode()).digest()).decode()
+        created = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=offset)
+                   ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if mode == "digest":
+            pwd = base64.b64encode(hashlib.sha1(nonce + created.encode() + pw.encode()).digest()).decode()
+            ptype = _PWD
+        else:
+            pwd, ptype = escape(pw), _PWD.replace("PasswordDigest", "PasswordText")
         hdr = (f'<s:Header><Security s:mustUnderstand="1" xmlns="{_WSSE}"><UsernameToken>'
-               f'<Username>{escape(user)}</Username><Password Type="{_PWD}">{digest}</Password>'
+               f'<Username>{escape(user)}</Username><Password Type="{ptype}">{pwd}</Password>'
                f'<Nonce EncodingType="{_B64}">{base64.b64encode(nonce).decode()}</Nonce>'
                f'<Created xmlns="{_WSU}">{created}</Created></UsernameToken></Security></s:Header>')
     return ('<?xml version="1.0" encoding="UTF-8"?>'
@@ -158,42 +170,86 @@ def _envelope(body: str, user: str, pw: str) -> str:
             f'<s:Body>{body}</s:Body></s:Envelope>')
 
 
-async def _soap(c: httpx.AsyncClient, url: str, body: str, user: str, pw: str) -> str:
-    r = await c.post(url, content=_envelope(body, user, pw),
+async def _soap(c: httpx.AsyncClient, url: str, body: str, user: str, pw: str,
+                mode: str = "digest", offset: float = 0) -> str:
+    r = await c.post(url, content=_envelope(body, user, pw, mode, offset),
                      headers={"Content-Type": "application/soap+xml; charset=utf-8"})
     if r.status_code >= 400:
         fault = re.search(r"<[^>]*Text[^>]*>([^<]+)<", r.text)
         reason = fault.group(1) if fault else f"HTTP {r.status_code}"
-        if r.status_code == 401 or "uthoriz" in reason:
-            reason = "wrong username or password"
+        if r.status_code in (401, 403) or (
+                r.status_code in (400, 500) and re.search(r"uthori|ender|ccess|assword|ecurity", r.text)):
+            raise _OnvifAuthError(reason)
         raise HTTPException(400, f"ONVIF: {reason}")
     return r.text
 
 
+async def _camera_clock_offset(c: httpx.AsyncClient, url: str) -> float:
+    """Seconds between the camera's clock and ours (WS-Security timestamps must match it)."""
+    try:
+        r = await c.post(url, content=_envelope(
+            '<GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/>', "", ""),
+            headers={"Content-Type": "application/soap+xml; charset=utf-8"})
+        block = re.search(r"UTCDateTime>(.*?)</[^>]*UTCDateTime>", r.text, re.S)
+        if not block:
+            return 0
+        v = {k: int(re.search(rf"{k}>(\d+)<", block.group(1)).group(1))
+             for k in ("Year", "Month", "Day", "Hour", "Minute", "Second")}
+        cam = datetime.datetime(v["Year"], v["Month"], v["Day"], v["Hour"], v["Minute"], v["Second"],
+                                tzinfo=datetime.timezone.utc)
+        return (cam - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    except Exception:
+        return 0
+
+
 async def onvif_stream_uris(ip: str, port: int, user: str, pw: str) -> list[str]:
-    """Return RTSP URIs of the first two media profiles (main, sub)."""
+    """Return RTSP URIs of the first two media profiles (main, sub).
+
+    Logs in the way the camera accepts: WS-Security digest using the camera's own clock,
+    then plain-text password, then HTTP digest only."""
     uris = []
+    device = f"http://{ip}:{port}/onvif/device_service"
     try:
         async with httpx.AsyncClient(timeout=8, auth=httpx.DigestAuth(user, pw) if user else None) as c:
-            caps = await _soap(c, f"http://{ip}:{port}/onvif/device_service",
-                               '<GetCapabilities xmlns="http://www.onvif.org/ver10/device/wsdl">'
-                               '<Category>Media</Category></GetCapabilities>', user, pw)
-            m = re.search(r"Media>.*?XAddr>([^<]+)<", caps, re.S)
-            mp = urlsplit(m.group(1).strip() if m else "/onvif/media_service")
-            media = urlunsplit(("http", f"{ip}:{port}", mp.path, mp.query, ""))
-            profiles = await _soap(c, media, '<GetProfiles xmlns="http://www.onvif.org/ver10/media/wsdl"/>',
-                                   user, pw)
+            offset = await _camera_clock_offset(c, device)
+            media = None
+            try:
+                caps = await _soap(c, device, '<GetCapabilities xmlns="http://www.onvif.org/ver10/device/wsdl">'
+                                   '<Category>Media</Category></GetCapabilities>', user, pw, "digest", offset)
+                m = re.search(r"Media>.*?XAddr>([^<]+)<", caps, re.S)
+                if m:
+                    mp = urlsplit(m.group(1).strip())
+                    media = urlunsplit(("http", f"{ip}:{port}", mp.path, mp.query, ""))
+            except _OnvifAuthError:
+                pass
+            media = media or f"http://{ip}:{port}/onvif/media_service"
+            profiles, mode, last = None, None, ""
+            for mode in ("digest", "text", "none"):
+                try:
+                    profiles = await _soap(c, media, '<GetProfiles xmlns="http://www.onvif.org/ver10/media/wsdl"/>',
+                                           user, pw, mode, offset)
+                    break
+                except _OnvifAuthError as e:
+                    last = str(e)
+            if profiles is None:
+                raise HTTPException(400, "ONVIF: the camera rejected the username or password"
+                                         f" ({last}). Some cameras need a separate ONVIF user"
+                                         " or ONVIF enabled in their settings.")
             for token in re.findall(r'<[^>]*Profiles[^>]*\stoken="([^"]+)"', profiles)[:2]:
                 body = ('<GetStreamUri xmlns="http://www.onvif.org/ver10/media/wsdl"><StreamSetup>'
                         '<Stream xmlns="http://www.onvif.org/ver10/schema">RTP-Unicast</Stream>'
                         '<Transport xmlns="http://www.onvif.org/ver10/schema"><Protocol>RTSP</Protocol>'
                         f'</Transport></StreamSetup><ProfileToken>{escape(token)}</ProfileToken>'
                         '</GetStreamUri>')
-                u = re.search(r"<[^>]*Uri>([^<]+)<", await _soap(c, media, body, user, pw))
+                try:
+                    u = re.search(r"<[^>]*Uri>([^<]+)<", await _soap(c, media, body, user, pw, mode, offset))
+                except _OnvifAuthError as e:
+                    raise HTTPException(400, f"ONVIF: stream address refused ({e})")
                 if u:
                     uris.append(html.unescape(u.group(1).strip()))
     except httpx.HTTPError as e:
-        raise HTTPException(400, f"Cannot reach ONVIF at {ip}:{port} ({e.__class__.__name__})")
+        raise HTTPException(400, f"Cannot reach ONVIF at {ip}:{port} ({e.__class__.__name__}) - "
+                                 "check the ONVIF port (often 80, 8000 or 8080)")
     if not uris:
         raise HTTPException(400, f"No ONVIF stream profiles found on {ip}")
     return uris
@@ -226,15 +282,30 @@ def _digest(challenge: str, user: str, pw: str, method: str, uri: str) -> str:
     return out + (f', opaque="{f["opaque"]}"' if f.get("opaque") else "")
 
 
-async def _rtsp_describe(host: str, port: int, uri: str, auth: str | None, timeout: float):
-    r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
-    try:
-        lines = [f"DESCRIBE {uri} RTSP/1.0", "CSeq: 2", "Accept: application/sdp", "User-Agent: Ellalon"]
+class _Rtsp:
+    """One RTSP connection. Many cameras (e.g. Provision/TVT) only accept the login on the same
+    connection that received the challenge, so the authenticated DESCRIBE reuses it."""
+
+    def __init__(self, host, port, timeout):
+        self.host, self.port, self.timeout, self.cseq = host, port, timeout, 1
+        self.r = self.w = None
+
+    async def open(self):
+        self.r, self.w = await asyncio.wait_for(asyncio.open_connection(self.host, self.port), self.timeout)
+
+    def close(self):
+        if self.w:
+            self.w.close()
+
+    async def describe(self, uri, auth=None):
+        lines = [f"DESCRIBE {uri} RTSP/1.0", f"CSeq: {self.cseq}", "Accept: application/sdp",
+                 "User-Agent: Ellalon"]
+        self.cseq += 1
         if auth:
             lines.append(f"Authorization: {auth}")
-        w.write(("\r\n".join(lines) + "\r\n\r\n").encode())
-        await w.drain()
-        head = (await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), timeout)).decode(errors="replace")
+        self.w.write(("\r\n".join(lines) + "\r\n\r\n").encode())
+        await self.w.drain()
+        head = (await asyncio.wait_for(self.r.readuntil(b"\r\n\r\n"), self.timeout)).decode(errors="replace")
         status_line, *rest = head.split("\r\n")
         if not status_line.startswith("RTSP/"):
             raise ValueError("not RTSP")
@@ -243,9 +314,17 @@ async def _rtsp_describe(host: str, port: int, uri: str, auth: str | None, timeo
             if ":" in line:
                 k, v = line.split(":", 1)
                 hdrs.setdefault(k.strip().lower(), []).append(v.strip())
+        n = int((hdrs.get("content-length") or ["0"])[0])
+        if n:
+            await asyncio.wait_for(self.r.readexactly(n), self.timeout)
         return int(status_line.split()[1]), hdrs
-    finally:
-        w.close()
+
+
+def _auth_for(hdrs, user, pw, uri):
+    challenges = hdrs.get("www-authenticate", [])
+    dig = next((c for c in challenges if c.lower().startswith("digest")), None)
+    return (_digest(dig, user, pw, "DESCRIBE", uri) if dig
+            else "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode())
 
 
 async def probe_url(url: str | None, timeout: float = 5) -> dict:
@@ -256,32 +335,40 @@ async def probe_url(url: str | None, timeout: float = 5) -> dict:
         return {"state": "error", "detail": "no stream address"}
     rtsp = p.scheme.startswith("rtsp")
     port = p.port or (554 if rtsp else 443 if p.scheme == "https" else 80)
-    if not rtsp:
-        try:
-            _, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
-            w.close()
-            return {"state": "online", "detail": f"{host}:{port} answers"}
-        except Exception:
-            return {"state": "offline", "detail": f"no answer from {host}:{port}"}
-    user, pw = unquote(p.username or ""), unquote(p.password or "")
-    uri = urlunsplit((p.scheme, f"{host}:{port}", p.path or "/", p.query, ""))
+    conn = _Rtsp(host, port, timeout)
     try:
-        code, hdrs = await _rtsp_describe(host, port, uri, None, timeout)
+        await conn.open()
     except ConnectionRefusedError:
         return {"state": "offline", "detail": f"{host} refuses port {port} (wrong RTSP port?)"}
     except (OSError, asyncio.TimeoutError):
         return {"state": "offline", "detail": f"no answer from {host}:{port}"}
-    except Exception as e:
-        return {"state": "error", "detail": f"not an RTSP stream ({e.__class__.__name__})"}
+    if not rtsp:
+        conn.close()
+        return {"state": "online", "detail": f"{host}:{port} answers"}
+    user, pw = unquote(p.username or ""), unquote(p.password or "")
+    uri = urlunsplit((p.scheme, f"{host}:{port}", p.path or "/", p.query, ""))
     try:
+        try:
+            code, hdrs = await conn.describe(uri)
+        except Exception as e:
+            return {"state": "error", "detail": f"not an RTSP stream ({e.__class__.__name__})"}
         if code == 401 and user:
-            challenges = hdrs.get("www-authenticate", [])
-            dig = next((c for c in challenges if c.lower().startswith("digest")), None)
-            auth = (_digest(dig, user, pw, "DESCRIBE", uri) if dig
-                    else "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode())
-            code, hdrs = await _rtsp_describe(host, port, uri, auth, timeout)
+            try:      # same connection first (session-bound nonce)
+                code, hdrs = await conn.describe(uri, _auth_for(hdrs, user, pw, uri))
+            except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError):
+                conn.close()      # camera hung up after the challenge: log in on a new connection
+                conn = _Rtsp(host, port, timeout)
+                await conn.open()
+                code, hdrs2 = await conn.describe(uri, _auth_for(hdrs, user, pw, uri))
+                if code == 401:   # it wants a fresh challenge answered on this connection
+                    try:
+                        code, hdrs = await conn.describe(uri, _auth_for(hdrs2, user, pw, uri))
+                    except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError):
+                        code = 401
     except Exception as e:
         return {"state": "error", "detail": f"login failed ({e.__class__.__name__})"}
+    finally:
+        conn.close()
     if code == 200:
         return {"state": "online", "detail": "stream OK"}
     if code in (401, 403):
