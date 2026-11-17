@@ -143,3 +143,8 @@ Web UI → System → **Rescan modules** → **Enable**. Core creates the contai
 - Change the admin password and create named operator accounts.
 - Size the data disk for recordings (about 10.8 GB per Mbps per camera per day).
 - Face recognition is biometric processing: confirm the legal basis before enabling it.
+
+### Camera discovery and bulk delete
+Cameras → **Discover** scans the server's networks (or ranges you enter) with ONVIF, Hikvision SADP and an RTSP port scan,
+shows vendor/model/MAC, and adds the ticked cameras with one username/password. Tick rows to **Delete selected**, or **Delete all**
+(type DELETE to confirm). Deleting a camera keeps its saved recordings.

@@ -24,6 +24,7 @@ from .db import Camera, SessionLocal
 
 router = APIRouter(prefix="/api")
 log = logging.getLogger("cameras")
+hooks = {"discover": None}     # set by main: run the discovery probe on the host network
 
 # {ch} = channel number. "onvif": stream URLs are discovered from the device.
 BRANDS = {
@@ -530,6 +531,53 @@ async def delete_camera(cid: int, _=Depends(require("admin"))):
         s.commit()
     await bus.broadcast("camera.changed", {"id": cid, "action": "deleted"})
     return {"ok": True}
+
+
+class DiscoverIn(BaseModel):
+    ranges: str = ""          # optional: "192.168.1.0/24, 10.0.0.10-10.0.0.200"
+
+
+@router.post("/cameras/discover")
+async def discover_cameras(body: DiscoverIn, _=Depends(require("admin"))):
+    """Find cameras on the network (ONVIF, Hikvision SADP, RTSP port scan) and mark known ones."""
+    ranges = [r.strip() for r in re.split(r"[,;\s]+", body.ranges) if r.strip()]
+    for r in ranges:
+        if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+(/\d{1,2}|-\d+(\.\d+\.\d+\.\d+)?)?", r):
+            raise HTTPException(400, f"Not a network or range: {r} (examples: 192.168.1.0/24, 192.168.1.10-200)")
+        if "/" in r and int(r.split("/")[1]) < 20:
+            raise HTTPException(400, f"{r} is too large - scan /20 or smaller")
+    if not hooks["discover"]:
+        raise HTTPException(503, "Discovery is not available")
+    try:
+        res = await asyncio.wait_for(asyncio.to_thread(hooks["discover"], {"ranges": ranges, "timeout": 4}), 120)
+    except Exception as e:
+        raise HTTPException(502, f"Discovery failed: {getattr(e, 'detail', e)}")
+    with SessionLocal() as s:
+        known = {settings_of(c).ip: c.name for c in s.query(Camera)}
+    for d in res.get("devices", []):
+        d["existing"] = known.get(d["ip"])
+    return res
+
+
+class BulkDeleteIn(BaseModel):
+    ids: list[int] = []
+    all: bool = False
+
+
+@router.post("/cameras/delete")
+async def delete_cameras(body: BulkDeleteIn, _=Depends(require("admin"))):
+    """Delete the chosen cameras, or all of them. Recordings already saved are kept."""
+    with SessionLocal() as s:
+        q = s.query(Camera) if body.all else s.query(Camera).filter(Camera.id.in_(body.ids or [-1]))
+        ids = [c.id for c in q]
+        for c in s.query(Camera).filter(Camera.id.in_(ids or [-1])):
+            s.delete(c)
+        s.commit()
+    for cid in ids:
+        CAM_STATUS.pop(cid, None)
+    if ids:
+        await bus.broadcast("camera.changed", {"action": "deleted", "ids": ids})
+    return {"deleted": len(ids)}
 
 
 @router.post("/cameras/probe")

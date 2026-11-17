@@ -68,10 +68,13 @@
       <div class="toolbar">
         <button id="camAdd">+ Add camera</button>
         <button id="camBatch" class="ghost">Batch add</button>
+        <button id="camDiscover" class="ghost">Discover</button>
+        <button id="camDelSel" class="danger" disabled>Delete selected</button>
+        <button id="camDelAll" class="ghost">Delete all</button>
         <span id="camSummary" class="muted"></span>
         <span class="muted">Click Edit to change a camera or copy its settings to other cameras.</span>
       </div>
-      <table><thead><tr><th>#</th><th>Name</th><th>Status</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
+      <table><thead><tr><th class="adm"><input type="checkbox" id="camSelAll" title="Select all"></th><th>#</th><th>Name</th><th>Status</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
     </div>
 
     <div id="tab-integrations" class="tab hidden">
@@ -231,6 +234,28 @@
   After installing, choose this recording server as <b>Recording storage</b> for the cameras it should record.
   It starts automatically at boot and keeps recording from its saved camera list when this server is down.</p>
   <button>Close</button>
+</form></dialog>
+
+<dialog id="discDialog" class="wide"><form id="discForm">
+  <h3>Discover cameras</h3>
+  <p class="muted small">Searches this server's network with ONVIF (Hikvision, Dahua, Axis, Provision, FLIR and every ONVIF brand),
+  Hikvision SADP and an RTSP port scan. Takes about 10-30 seconds.</p>
+  <div class="row"><input name="ranges" class="grow" placeholder="Optional: networks to scan, e.g. 192.168.1.0/24, 10.0.0.10-200 (empty = this server's networks)">
+    <button type="button" id="discScan">Scan</button></div>
+  <p id="discMsg" class="muted small"></p>
+  <table id="discTable" class="hidden"><thead><tr><th><input type="checkbox" id="discAll" title="Select all new"></th><th>IP</th><th>Vendor / model</th><th>Name / MAC</th><th>Found by</th><th>Add as</th></tr></thead><tbody id="discRows"></tbody></table>
+  <div id="discAddBox" class="hidden">
+    <h4>Settings for the selected cameras</h4>
+    <div class="fgrid">
+      <label>Username<input name="username" autocomplete="off"></label>
+      <label>Password<input name="password" type="password" autocomplete="new-password"></label>
+      <label>Location<input name="location"></label>
+      <label>Recording storage<select name="storage_id" class="storageSel"></select></label>
+    </div>
+    <div class="checks"><label><input type="checkbox" name="use_substream" checked> Substream</label><label><input type="checkbox" name="record" checked> Record</label></div>
+  </div>
+  <p id="discResult" class="small"></p>
+  <button type="button" class="ghost" data-close>Close</button> <button type="button" id="discAdd" class="hidden">Add selected</button>
 </form></dialog>
 
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>

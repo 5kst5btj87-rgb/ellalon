@@ -289,15 +289,95 @@ async function loadCameras() {
   await loadBrands().catch(() => {});
   const admin = me.role === "admin", yes = (v) => (v ? "✓" : "–");
   const label = (id) => brands.find((b) => b.id === id)?.label.replace(/ \(.*\)$/, "") || id || "";
-  $("#camAdd").classList.toggle("hidden", !admin); $("#camBatch").classList.toggle("hidden", !admin);
+  ["#camAdd", "#camBatch", "#camDiscover", "#camDelSel", "#camDelAll"].forEach((b) => $(b).classList.toggle("hidden", !admin));
+  document.querySelectorAll("#tab-cameras .adm").forEach((e) => e.classList.toggle("hidden", !admin));
+  for (const id of [...camSelected]) if (!cameras.some((c) => c.id === id)) camSelected.delete(id);
   $("#cameras").innerHTML = cameras.map((c) => { const s = c.settings || {}, onv = ["onvif", "flir"].includes(s.brand);
-    return `<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${camStateHtml(c.status)}</td><td>${esc(label(s.brand))}</td><td>${esc(s.ip)}</td><td>${onv ? "–" : esc(s.channel)}</td>
+    return `<tr>${admin ? `<td><input type="checkbox" class="camSel" value="${c.id}" ${camSelected.has(c.id) ? "checked" : ""}></td>` : ""}<td>${c.id}</td><td>${esc(c.name)}</td><td>${camStateHtml(c.status)}</td><td>${esc(label(s.brand))}</td><td>${esc(s.ip)}</td><td>${onv ? "–" : esc(s.channel)}</td>
     <td>${esc(c.location || "")}</td><td>${yes(c.substream_url)}</td><td>${yes(c.record)}</td><td>${yes(c.analytics)}</td><td>${yes(c.face_recognition)}</td>
     <td>${admin ? `<button class="ghost" onclick="editCam(${c.id})">Edit</button> <button class="danger" onclick="delCam(${c.id})">Delete</button>` : ""}</td></tr>`; }).join("")
-    || `<tr><td colspan=12 class="muted">No cameras yet</td></tr>`;
+    || `<tr><td colspan=13 class="muted">No cameras yet</td></tr>`;
+  $("#cameras").querySelectorAll(".camSel").forEach((cb) => (cb.onchange = () => { cb.checked ? camSelected.add(+cb.value) : camSelected.delete(+cb.value); camSelUi(); }));
+  camSelUi();
   const n = (k) => cameras.filter((c) => c.status?.state === k).length, bad = cameras.filter((c) => ["offline", "auth", "path", "error"].includes(c.status?.state)).length;
   $("#camSummary").innerHTML = cameras.length ? `<b>${n("online")}</b> online · <b>${bad}</b> with problems${n("checking") ? ` · ${n("checking")} checking` : ""}` : "";
 }
+// ---- select & delete
+const camSelected = new Set();
+function camSelUi() {
+  const n = camSelected.size;
+  $("#camDelSel").disabled = !n; $("#camDelSel").textContent = n ? `Delete selected (${n})` : "Delete selected";
+  $("#camSelAll").checked = n > 0 && n === cameras.length; $("#camSelAll").indeterminate = n > 0 && n < cameras.length;
+}
+$("#camSelAll").onchange = () => { camSelected.clear(); if ($("#camSelAll").checked) cameras.forEach((c) => camSelected.add(c.id)); loadCameras(); };
+async function deleteCameras(body, what) {
+  try { const r = await api("/api/cameras/delete", { method: "POST", body }); camSelected.clear(); alert(`Deleted ${r.deleted} camera(s).`); }
+  catch (err) { alert(errText(err)); }
+  loadCameras();
+}
+$("#camDelSel").onclick = () => {
+  const names = cameras.filter((c) => camSelected.has(c.id)).map((c) => c.name);
+  if (confirm(`Delete ${names.length} camera(s)?\n\n${names.slice(0, 15).join("\n")}${names.length > 15 ? "\n..." : ""}\n\nRecordings already saved are kept.`))
+    deleteCameras({ ids: [...camSelected] });
+};
+$("#camDelAll").onclick = () => {
+  if (!cameras.length) return;
+  const t = prompt(`Delete ALL ${cameras.length} cameras? Recordings already saved are kept.\nType DELETE to confirm:`);
+  if (t && t.trim().toUpperCase() === "DELETE") deleteCameras({ all: true });
+};
+
+// ---- discovery
+let discFound = [];
+const VENDOR_NAME = (d) => [d.vendor, d.model].filter(Boolean).join(" ") || '<span class="muted">unknown</span>';
+$("#camDiscover").onclick = async () => {
+  await loadBrands(); const f = $("#discForm"); f.reset();
+  $("#discMsg").textContent = ""; $("#discResult").textContent = ""; discFound = [];
+  ["#discTable", "#discAddBox", "#discAdd"].forEach((x) => $(x).classList.add("hidden"));
+  document.querySelectorAll("#discForm .storageSel").forEach((sel) => storageOptions(sel, ""));
+  $("#discDialog").showModal();
+};
+$("#discScan").onclick = async () => {
+  const msg = $("#discMsg"), btn = $("#discScan"); btn.disabled = true; msg.className = "muted small";
+  let t = 0; const timer = setInterval(() => (msg.textContent = `Scanning the network… ${++t}s`), 1000);
+  try {
+    const r = await api("/api/cameras/discover", { method: "POST", body: { ranges: el($("#discForm"), "ranges").value } });
+    discFound = r.devices;
+    const fresh = discFound.filter((d) => !d.existing).length;
+    msg.textContent = `Found ${discFound.length} device(s), ${fresh} new · scanned ${r.scanned} addresses on ${r.networks.join(", ") || "the given ranges"} in ${r.seconds}s`;
+    const opts = (sel) => brands.map((b) => `<option value="${b.id}" ${b.id === sel ? "selected" : ""}>${esc(b.label)}</option>`).join("");
+    $("#discRows").innerHTML = discFound.map((d, i) => `<tr>
+      <td><input type="checkbox" class="discSel" value="${i}" ${d.existing ? "disabled" : "checked"}></td>
+      <td>${esc(d.ip)}</td><td>${VENDOR_NAME(d)}${d.note ? `<div class="err small">${esc(d.note)}</div>` : ""}</td>
+      <td>${esc(d.name || "")}${d.mac ? `<div class="muted small">${esc(d.mac)}</div>` : ""}</td>
+      <td class="small">${esc(d.sources.join(", "))}</td>
+      <td>${d.existing ? `<span class="muted small">already added as ${esc(d.existing)}</span>` : `<select class="discBrand" data-i="${i}">${opts(d.brand)}</select>`}</td></tr>`).join("")
+      || `<tr><td colspan=6 class="muted">No cameras found. Check that this server is on the cameras' network, or enter a range.</td></tr>`;
+    $("#discTable").classList.remove("hidden");
+    $("#discAddBox").classList.toggle("hidden", !fresh); $("#discAdd").classList.toggle("hidden", !fresh);
+    $("#discAll").checked = !!fresh;
+  } catch (err) { msg.className = "err small"; msg.textContent = errText(err); }
+  clearInterval(timer); btn.disabled = false;
+};
+$("#discAll").onchange = () => $("#discRows").querySelectorAll(".discSel:not(:disabled)").forEach((cb) => (cb.checked = $("#discAll").checked));
+$("#discAdd").onclick = async () => {
+  const f = $("#discForm"), rows = [...$("#discRows").querySelectorAll(".discSel:checked")].map((cb) => +cb.value);
+  if (!rows.length) return;
+  const common = { username: el(f, "username").value.trim(), password: el(f, "password").value, location: el(f, "location").value.trim() || null,
+    storage_id: el(f, "storage_id").value || null, use_substream: el(f, "use_substream").checked, record: el(f, "record").checked };
+  const res = $("#discResult"); res.className = "small muted"; let added = 0; const failed = [];
+  for (const [n, i] of rows.entries()) {
+    const d = discFound[i], brand = $(`.discBrand[data-i="${i}"]`).value;
+    res.textContent = `Adding ${n + 1} of ${rows.length}: ${d.ip}…`;
+    const body = { ...common, brand, ip: d.ip, onvif_port: d.onvif_port || 80, name: `${d.model || d.vendor || "Camera"} ${d.ip}`.trim() };
+    try { const c = await api("/api/cameras", { method: "POST", body }); added++; d.existing = c.name; }
+    catch (err) { failed.push(`${d.ip}: ${errText(err)}`); }
+  }
+  res.className = failed.length ? "small err" : "small ok";
+  res.innerHTML = `Added ${added} camera(s).` + (failed.length ? `<br>Not added:<br>${failed.map(esc).join("<br>")}` : "");
+  $("#discRows").querySelectorAll(".discSel:checked").forEach((cb) => { if (discFound[+cb.value].existing) { cb.checked = false; cb.disabled = true; } });
+  loadCameras();
+};
+
 window.delCam = async (id) => { if (confirm("Delete camera?")) { await api(`/api/cameras/${id}`, { method: "DELETE" }); loadCameras(); } };
 
 // ---------------------------------------------------------------- integrations (3rd-party systems)

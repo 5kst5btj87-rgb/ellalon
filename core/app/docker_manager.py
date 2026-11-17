@@ -1,4 +1,5 @@
 """Thin layer over the Docker API: core uses this to run every module container."""
+import json
 import logging
 import re
 
@@ -159,6 +160,13 @@ class DockerManager:
             mounts[name] = target
             remote.add(st["id"])
         return mounts, remote
+
+    def discover(self, args: dict) -> dict:
+        """Camera discovery needs the host network (multicast), so run it in a throw-away container."""
+        out = self.client.containers.run(f"ellalon/core:{settings.version}",
+                                         ["python", "/app/app/discovery_probe.py", json.dumps(args)],
+                                         network_mode="host", remove=True)
+        return json.loads(out.decode().strip().splitlines()[-1])
 
     def test_storage(self, st: dict) -> dict:
         """Mount a storage in a throw-away container, write a test file, report free space."""
