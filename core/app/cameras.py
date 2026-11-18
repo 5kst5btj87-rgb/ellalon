@@ -213,6 +213,28 @@ async def _camera_clock_offset(c: httpx.AsyncClient, url: str) -> float:
         return 0
 
 
+def source_names(xml: str) -> dict[int, str]:
+    """Channel number -> name the recorder gives its video input (if any)."""
+    import xml.etree.ElementTree as ET
+    loc = lambda t: t.rsplit("}", 1)[-1]
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return {}
+    order, names = [], {}
+    for prof in root.iter():
+        if loc(prof.tag) != "Profiles":
+            continue
+        vsc = next((e for e in prof.iter() if loc(e.tag) == "VideoSourceConfiguration"), None)
+        src = next((e.text.strip() for e in prof.iter() if loc(e.tag) == "SourceToken" and e.text), prof.get("token"))
+        if src not in order:
+            order.append(src)
+            nm = next((e.text.strip() for e in (vsc if vsc is not None else []) if loc(e.tag) == "Name" and e.text), "")
+            if nm and not re.fullmatch(r"(?i)(video\s*source|vsc|videosourceconfig)[\s_-]*\d*", nm):
+                names[len(order)] = nm
+    return names
+
+
 def profiles_by_source(xml: str) -> list[list[str]]:
     """GetProfiles -> profile tokens grouped by video input (channel), in the device's order."""
     import xml.etree.ElementTree as ET
@@ -230,7 +252,8 @@ def profiles_by_source(xml: str) -> list[list[str]]:
     return list(groups.values())
 
 
-async def onvif_stream_uris(ip: str, port: int, user: str, pw: str, channel: int | None = None) -> list[str]:
+async def onvif_stream_uris(ip: str, port: int, user: str, pw: str, channel: int | None = None,
+                            every: bool = False) -> list:
     """Return RTSP URIs of the first two media profiles (main, sub).
 
     Logs in the way the camera accepts: WS-Security digest using the camera's own clock,
@@ -264,6 +287,28 @@ async def onvif_stream_uris(ip: str, port: int, user: str, pw: str, channel: int
                                          f" ({last}). Some cameras need a separate ONVIF user"
                                          " or ONVIF enabled in their settings.")
             tokens = re.findall(r'<[^>]*Profiles[^>]*\stoken="([^"]+)"', profiles)
+
+            async def uri_of(token):
+                body = ('<GetStreamUri xmlns="http://www.onvif.org/ver10/media/wsdl"><StreamSetup>'
+                        '<Stream xmlns="http://www.onvif.org/ver10/schema">RTP-Unicast</Stream>'
+                        '<Transport xmlns="http://www.onvif.org/ver10/schema"><Protocol>RTSP</Protocol>'
+                        f'</Transport></StreamSetup><ProfileToken>{escape(token)}</ProfileToken>'
+                        '</GetStreamUri>')
+                u = re.search(r"<[^>]*Uri>([^<]+)<", await _soap(c, media, body, user, pw, mode, offset))
+                return html.unescape(u.group(1).strip()) if u else None
+            if every:                        # NVR: every channel with its main/sub address
+                names = source_names(profiles)
+                out = []
+                for i, group in enumerate(profiles_by_source(profiles), 1):
+                    try:
+                        us = [u for u in [await uri_of(t) for t in group[:2]] if u]
+                    except _OnvifAuthError as e:
+                        raise HTTPException(400, f"ONVIF: stream address refused ({e})")
+                    if us:
+                        out.append({"channel": i, "name": names.get(i, ""), "uris": us})
+                if not out:
+                    raise HTTPException(400, f"No ONVIF stream profiles found on {ip}")
+                return out
             if channel:                      # NVR: profiles of the Nth video input
                 groups = profiles_by_source(profiles)
                 if channel > len(groups):
@@ -663,6 +708,55 @@ async def probe_events(body: CamSettings, _=Depends(require("admin"))):
     s = body.model_dump()
     s["ip"] = s["ip"].strip()
     return await asyncio.wait_for(supported_types(s), 30)
+
+
+@router.post("/cameras/nvr-channels")
+async def nvr_channels(body: CamSettings, _=Depends(require("admin"))):
+    """List the channels of an NVR/DVR: over ONVIF (exact addresses), else by trying the brand's
+    channel address 1..N. Each channel is checked, and channels already in the list are marked."""
+    s = CamSettings(**body.model_dump())
+    s.ip = s.ip.strip()
+    if not s.ip:
+        raise HTTPException(400, "Enter the IP address first")
+    chans, how, onvif_err = [], "", ""
+    try:
+        found = await asyncio.wait_for(onvif_stream_uris(s.ip, s.onvif_port, s.username, s.password, every=True), 60)
+        for f in found:
+            mp = urlsplit(_onvif_uri(f["uris"][0], s))
+            sp = urlsplit(_onvif_uri(f["uris"][1], s)) if len(f["uris"]) > 1 else None
+            chans.append({"channel": f["channel"], "name": f["name"], "port": mp.port or 554,
+                          "main_path": _pq(mp), "sub_path": _pq(sp) if sp else "",
+                          "main": _onvif_uri(f["uris"][0], s)})
+        how = "ONVIF"
+    except Exception as e:
+        onvif_err = getattr(e, "detail", None) or e.__class__.__name__
+    if not chans:
+        b = BRANDS.get(s.brand, {})
+        if not b.get("main") or "{ch}" not in b["main"]:
+            raise HTTPException(400, f"ONVIF: {onvif_err}. Choose the recorder's brand (with channels) to try its channel addresses instead.")
+        how = b["label"]
+        for ch in range(1, 33):
+            x = s.model_copy(update={"channel": ch})
+            mp, sp = urlsplit(_template_url(x, b["main"])), urlsplit(_template_url(x, b["sub"]))
+            chans.append({"channel": ch, "name": "", "port": s.port, "main_path": _pq(mp), "sub_path": _pq(sp),
+                          "main": _template_url(x, b["main"])})
+    sem = asyncio.Semaphore(4)
+
+    async def check(c):
+        async with sem:
+            c["status"] = await probe_url(c.pop("main"), 4)
+    await asyncio.gather(*(check(c) for c in chans))
+    if how != "ONVIF":                # trying addresses: drop the channels past the last one that answered
+        last = max((c["channel"] for c in chans if c["status"]["state"] in ("online", "auth")), default=0)
+        if not last:
+            raise HTTPException(400, f"No channel answered. ONVIF: {onvif_err}")
+        chans = [c for c in chans if c["channel"] <= last]
+    with SessionLocal() as db:          # same recorder + same stream address = already added
+        known = {_pq(urlsplit(cam.url)).lower(): cam.name for cam in db.query(Camera)
+                 if cam.url and urlsplit(cam.url).hostname == s.ip}
+    for c in chans:
+        c["existing"] = known.get(c["main_path"].lower())
+    return {"how": how, "channels": chans}
 
 
 class BulkDeleteIn(BaseModel):

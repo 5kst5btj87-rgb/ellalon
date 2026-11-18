@@ -187,7 +187,7 @@
     <button type="button" class="ghost" id="copyApply">Save &amp; copy to selected</button>
   </div>
   <p id="camMsg" class="err"></p>
-  <button type="button" class="ghost" data-close>Cancel</button> <button type="button" class="ghost" id="camTest">Test connection</button> <button type="button" class="ghost" id="camAuto" title="Find the right stream address automatically (ONVIF + known formats)">Auto-detect</button> <button>Save</button>
+  <button type="button" class="ghost" data-close>Cancel</button> <button type="button" class="ghost" id="camTest">Test connection</button> <button type="button" class="ghost" id="camAllCh" title="List every channel of this NVR/DVR and add the ones you choose">All NVR channels…</button> <button type="button" class="ghost" id="camAuto" title="Find the right stream address automatically (ONVIF + known formats)">Auto-detect</button> <button>Save</button>
 </form></dialog>
 
 <dialog id="batchDialog" class="wide"><form id="batchForm">
@@ -315,6 +315,14 @@
   <button class="ghost">Close</button> <button type="button" class="ghost" id="liveReplay">⟲ 60 s before the alarm</button> <button type="button" id="liveAck">Acknowledge</button> <button type="button" class="ghost" id="liveClose">Close alarm</button>
 </form></dialog>
 <div id="toasts" class="toasts"></div>
+
+<dialog id="chDialog" class="wide"><form method="dialog">
+  <h3>Add NVR channels</h3>
+  <p id="chMsg" class="muted small"></p>
+  <table id="chTable" class="hidden"><thead><tr><th><input type="checkbox" id="chAll" title="Select all new"></th><th>Ch</th><th>Name</th><th>Status</th></tr></thead><tbody id="chRows"></tbody></table>
+  <p id="chResult" class="small"></p>
+  <button class="ghost">Close</button> <button type="button" id="chAdd" class="hidden">Add selected</button>
+</form></dialog>
 
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>
   <div class="stack">

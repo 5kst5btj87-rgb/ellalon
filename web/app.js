@@ -667,6 +667,52 @@ $("#camTest").onclick = async () => {
     if (["auth", "path", "error"].includes(r.main.state)) msg.textContent += "   →  Try “Auto-detect” to find the right address.";
   } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
 };
+// ---- every channel of an NVR
+let chFound = [], chBase = null;
+$("#camAllCh").onclick = async () => {
+  const f = $("#camEdit"); chBase = formData(f);
+  if (!chBase.ip) { $("#camMsg").className = "err"; $("#camMsg").textContent = "Enter the NVR's IP address, username and password first."; return; }
+  $("#chRows").innerHTML = ""; $("#chTable").classList.add("hidden"); $("#chAdd").classList.add("hidden"); $("#chResult").textContent = "";
+  $("#chMsg").className = "muted small"; $("#chMsg").textContent = "Asking the NVR for its channels and checking each one… (up to a minute)";
+  $("#chDialog").showModal();
+  try {
+    const r = await api("/api/cameras/nvr-channels", { method: "POST", body: chBase });
+    chFound = r.channels;
+    const base = (chBase.name || "NVR").replace(/\s*(ch|channel)\s*\d+$/i, "").trim();
+    $("#chRows").innerHTML = chFound.map((c, i) => {
+      const [cls, text] = CAM_STATE[c.status.state] || CAM_STATE.checking, live = c.status.state === "online";
+      return `<tr><td><input type="checkbox" class="chSel" value="${i}" ${c.existing ? "disabled" : live ? "checked" : ""}></td>
+        <td>${c.channel}</td><td><input class="chName" data-i="${i}" value="${esc(c.name || `${base} Ch ${c.channel}`)}" ${c.existing ? "disabled" : ""}></td>
+        <td class="small"><span class="dot ${cls}"></span> ${c.existing ? `already added as ${esc(c.existing)}` : esc(text)}${!live && !c.existing ? ` <span class="muted">${esc(c.status.detail || "")}</span>` : ""}</td></tr>`;
+    }).join("");
+    const live = chFound.filter((c) => c.status.state === "online" && !c.existing).length;
+    $("#chMsg").textContent = `${chFound.length} channel(s) found via ${r.how} · ${live} new with video. Channels without a camera are not ticked.`;
+    $("#chTable").classList.remove("hidden"); $("#chAdd").classList.toggle("hidden", !chFound.some((c) => !c.existing));
+    $("#chAll").checked = !!live;
+  } catch (err) { $("#chMsg").className = "err small"; $("#chMsg").textContent = errText(err); }
+};
+$("#chAll").onchange = () => $("#chRows").querySelectorAll(".chSel:not(:disabled)").forEach((cb) => (cb.checked = $("#chAll").checked));
+$("#chAdd").onclick = async () => {
+  const pick = [...$("#chRows").querySelectorAll(".chSel:checked")].map((cb) => +cb.value);
+  if (!pick.length) return;
+  const res = $("#chResult"), viaOnvif = /ONVIF/.test($("#chMsg").textContent); let added = 0; const failed = [];
+  $("#chAdd").disabled = true;
+  for (const [n, i] of pick.entries()) {
+    const c = chFound[i], name = $(`.chName[data-i="${i}"]`).value.trim() || `NVR Ch ${c.channel}`;
+    res.className = "small muted"; res.textContent = `Adding ${n + 1} of ${pick.length}: ${name}…`;
+    const body = viaOnvif
+      ? { ...chBase, name, brand: "rtsp", port: c.port, channel: 1, main_path: c.main_path, sub_path: c.sub_path }
+      : { ...chBase, name, channel: c.channel };
+    try { const cam = await api("/api/cameras", { method: "POST", body }); added++; c.existing = cam.name; }
+    catch (err) { failed.push(`Ch ${c.channel}: ${errText(err)}`); }
+  }
+  $("#chAdd").disabled = false;
+  res.className = failed.length ? "small err" : "small ok";
+  res.innerHTML = `Added ${added} camera(s).` + (failed.length ? "<br>" + failed.map(esc).join("<br>") : "");
+  $("#chRows").querySelectorAll(".chSel:checked").forEach((cb) => { if (chFound[+cb.value].existing) { cb.checked = false; cb.disabled = true; } });
+  loadCameras();
+};
+
 $("#camAuto").onclick = async () => {
   const f = $("#camEdit"), msg = $("#camMsg"), btn = $("#camAuto");
   msg.className = "muted"; msg.textContent = "Looking for the right stream address (ONVIF, then known formats)…"; btn.disabled = true;
