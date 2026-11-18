@@ -262,9 +262,11 @@ async def apollo_test_api(body: ApolloTestIn, request: Request):
         res = await asyncio.wait_for(apollo_test(cfg), 60)
     except asyncio.TimeoutError:
         return {"ok": False, "steps": [{"ok": False, "text": "No answer within 60 seconds"}], "devices": [], "found": {}}
-    known = {(d["kind"], str(d["number"])) for d in store.devices.values() if body.system_id and d["system_id"] == body.system_id}
+    known = {(d["kind"], str(d["number"])): d.get("name") for d in store.devices.values()
+             if body.system_id and d["system_id"] == body.system_id}
     for d in res["devices"]:
         d["imported"] = (d["kind"], d["id"]) in known
+        d["current_name"] = known.get((d["kind"], d["id"]))     # name in Ellalon (may be outdated)
     return res
 
 

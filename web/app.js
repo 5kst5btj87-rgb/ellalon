@@ -1157,7 +1157,7 @@ function intChosen() {
 }
 function intChosenUi() {
   const n = intChosen().length;
-  $("#intSave").textContent = n ? `Save and import ${n} item(s)` : "Save";
+  $("#intSave").textContent = n ? `Save and import / update ${n} item(s)` : "Save";
 }
 $("#intTest").onclick = async () => {
   const btn = $("#intTest"), msg = $("#intTestMsg"), type = $("#intType").value;
@@ -1175,13 +1175,17 @@ $("#intTest").onclick = async () => {
         const rows = r.devices.map((d, i) => [d, i]).filter(([d]) => d.kind === kind);
         if (!rows.length) return "";
         return `<div class="devGroup"><label class="inline devHead"><input type="checkbox" class="devAll" data-kind="${kind}"> <b>${INT_KIND[kind]} (${rows.length})</b></label>
-          <div class="devList">${rows.map(([d, i]) => `<label class="inline"><input type="checkbox" class="devSel" data-kind="${kind}" value="${i}" ${d.imported ? "disabled" : ""}>
-            ${esc(d.name)} <span class="muted small">#${esc(d.id)}${d.type ? " · " + esc(d.type) : ""}${d.state ? " · " + esc(d.state) : ""}${d.where ? " · " + esc(d.where) : ""}${d.imported ? " · already imported" : ""}</span></label>`).join("")}</div></div>`;
+          <div class="devList">${rows.map(([d, i]) => {
+            const renamed = d.imported && d.current_name && d.current_name !== d.name;
+            return `<label class="inline"><input type="checkbox" class="devSel" data-kind="${kind}" value="${i}" ${renamed ? "checked" : ""}>
+            ${esc(d.name)} <span class="muted small">#${esc(d.id)}${d.type ? " · " + esc(d.type) : ""}${d.state ? " · " + esc(d.state) : ""}${d.where ? " · " + esc(d.where) : ""}</span>
+            ${renamed ? `<span class="small warn">renamed in APACS - Ellalon has “${esc(d.current_name)}”, will update</span>` : d.imported ? `<span class="small muted">· imported</span>` : ""}</label>`; }).join("")}</div></div>`;
       }).join("");
       $("#intDevs").innerHTML = groups;
       $("#intDevs").querySelectorAll(".devAll").forEach((a) => (a.onchange = () => {
         $("#intDevs").querySelectorAll(`.devSel[data-kind="${a.dataset.kind}"]:not(:disabled)`).forEach((cb) => (cb.checked = a.checked)); intChosenUi(); }));
       $("#intDevs").querySelectorAll(".devSel").forEach((cb) => (cb.onchange = intChosenUi));
+      intChosenUi();                                       // renamed doors are ticked already
     }
   } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
   btn.disabled = false;

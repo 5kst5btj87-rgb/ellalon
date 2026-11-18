@@ -444,6 +444,7 @@ class ApolloAdapter(Adapter):
         async with ApacsClient(self.cfg) as a:
             await a.login()
             objs = {o["id"]: o for o in await a.objects()}
+            self.sync_names(objs.values())
             self.connected = True
             self.hub.status(self.sid, "connected")
             since = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -462,18 +463,29 @@ class ApolloAdapter(Adapter):
                 if len(seen) > 5000:
                     seen = set(list(seen)[-1000:])
                 ticks += 1
-                if ticks % 10 == 0:                       # refresh the states of imported devices
-                    for o in await a.objects():
-                        objs[o["id"]] = o
-                        if o["state"] is not None and apacs_kind(o["type"]):
-                            d = self.hub.device(self.sid, apacs_kind(o["type"]), o["id"])
-                            if d:
-                                self.hub.upsert(self.sid, d["kind"], o["id"], None, {"state": o["state"]})
-                    self.hub.save()
+                if ticks % 10 == 0:                       # refresh names and states of imported devices
+                    fresh = await a.objects()
+                    objs.update({o["id"]: o for o in fresh})
+                    self.sync_names(fresh)
                 try:
                     await asyncio.wait_for(self._stop.wait(), float(self.cfg.get("poll_seconds") or 3))
                 except asyncio.TimeoutError:
                     pass
+
+    def sync_names(self, objs):
+        """Names and states of imported devices follow APACS (a door renamed there is renamed here)."""
+        changed = False
+        for o in objs:
+            kind = apacs_kind(o["type"])
+            d = self.hub.device(self.sid, kind, o["id"]) if kind else None
+            if not d:
+                continue
+            state = {"state": o["state"]} if o["state"] is not None else {}
+            if d.get("name") != o["label"] or any((d.get("state") or {}).get(k) != v for k, v in state.items()):
+                self.hub.upsert(self.sid, kind, o["id"], o["label"], state)
+                changed = True
+        if changed:
+            self.hub.save()
 
     async def apacs_event(self, ev: dict, objs: dict):
         src = ev.get("Source") or {}

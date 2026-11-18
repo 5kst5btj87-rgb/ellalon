@@ -138,3 +138,4 @@ dialog.ask{width:min(460px,92vw)}
 #askText{white-space:pre-line;margin:0 0 10px}
 #askInput{width:100%;box-sizing:border-box;margin-bottom:10px}
 #askDialog .row{display:flex;justify-content:flex-end;gap:8px}
+.warn{color:var(--warn)}
