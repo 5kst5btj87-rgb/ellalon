@@ -51,3 +51,23 @@ td button{padding:4px 10px;font-size:12px}
 .bar span{display:block;height:100%;background:var(--info)}.bar span.full{background:var(--high)}
 pre.cmd{background:#000;padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:12px;margin:6px 0}
 .camlist{margin:6px 0 0;padding-left:16px;font-size:12px}.camlist .bad{color:var(--high)}
+
+/* video wall: camera list + tiles */
+.wallwrap{display:flex;gap:8px;height:calc(100vh - 140px)}
+.wallwrap .wall{flex:1;min-width:0;height:100%}
+.wallside{width:230px;flex:none;display:flex;flex-direction:column;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;overflow:hidden}
+.wallside p{margin:0;word-break:normal;overflow-wrap:normal}
+.wallcams{flex:1;overflow:auto;display:grid;align-content:start;gap:2px}
+.wgroup{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:8px 4px 2px}
+.wcam{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:5px;cursor:grab;user-select:none;-webkit-user-select:none}
+.wcam:hover{background:#ffffff12}.wcam:active{cursor:grabbing}
+.wcam .wname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wcam.on .wname,.wcam.on .small{color:var(--accent)}
+.tile .tvid{position:absolute;inset:0}
+.tile .thint{text-align:center;line-height:1.5}
+.tile .tclose{position:absolute;right:4px;top:4px;padding:0 9px;background:#000b;color:var(--text);border:0;font-size:17px;line-height:24px;opacity:0;transition:opacity .15s;z-index:2}
+.tile:hover .tclose{opacity:1}
+.tile .label{z-index:2}
+.tile.drop{outline:2px dashed var(--accent);outline-offset:-3px}
+@media (hover:none){.tile .tclose{opacity:1}}
+@media (max-width:700px){.wallside{width:150px}}

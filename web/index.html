@@ -39,10 +39,23 @@
   <main>
     <div id="tab-wall" class="tab">
       <div class="toolbar">
-        <label>Grid <select id="grid"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
-        <span class="muted">Click a tile to choose a camera. Rules can push cameras here automatically.</span>
+        <button id="wallSideBtn" class="ghost" title="Show or hide the camera list">☰ Cameras</button>
+        <label>Grid <select id="grid"><option value="1">1×1</option><option value="2" selected>2×2</option><option value="3">3×3</option><option value="4">4×4</option><option value="5">5×5</option><option value="6">6×6</option></select></label>
+        <label>Layout <select id="layoutSel"></select></label>
+        <button id="layoutSave" class="ghost" title="Save the wall into the chosen layout">Save</button>
+        <button id="layoutSaveAs" class="ghost">Save as…</button>
+        <button id="layoutDel" class="ghost">Delete layout</button>
+        <button id="wallClear" class="ghost">Clear wall</button>
+        <span id="layoutMsg" class="muted small"></span>
       </div>
-      <div id="wall" class="wall"></div>
+      <div class="wallwrap">
+        <aside id="wallSide" class="wallside">
+          <input id="wallSearch" placeholder="Search cameras" autocomplete="off">
+          <div id="wallCams" class="wallcams"></div>
+          <p class="muted small">Drag a camera onto a tile, or click it to fill the next free tile. Drag tiles to swap them.</p>
+        </aside>
+        <div id="wall" class="wall"></div>
+      </div>
     </div>
 
     <div id="tab-incidents" class="tab hidden">

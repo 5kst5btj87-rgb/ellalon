@@ -39,7 +39,7 @@ async function start() {
   $("#login").classList.add("hidden"); $("#shell").classList.remove("hidden");
   $("#who").textContent = `${me.sub} (${me.role})`;
   cameras = await api("/api/cameras");
-  connectWs(); renderWall(); show("wall");
+  connectWs(); renderWall(); renderWallSide(); loadLayouts(); show("wall");
 }
 
 // ---------------------------------------------------------------- tabs
@@ -60,7 +60,8 @@ function connectWs() {
     const { kind, data } = JSON.parse(m.data);
     if (kind !== "event") return;
     $("#events").insertAdjacentHTML("afterbegin", eventRow(data));
-    if (data.type === "wall.updated" && data.payload?.layout_data) applyWall(data.payload.layout_data);
+    if (data.type === "wall.updated" && data.payload?.layout_data) applyWall(data.payload.layout_data, data.payload.layout_data.name);
+    if (data.type.startsWith("camera.") && !$("#tab-wall").classList.contains("hidden")) refreshWallCams();
     if (["high", "critical"].includes(data.severity)) flashCamera(data.camera_id);
     if (data.type.startsWith("camera.") && !$("#tab-cameras").classList.contains("hidden")) loadCameras();
     if (data.source === "integrations" && !$("#tab-integrations").classList.contains("hidden")) refreshIntegrationsSoon();
@@ -73,35 +74,159 @@ const camName = (id) => (id ? cameras.find((c) => c.id === id)?.name || "#" + id
 async function loadEvents() { $("#events").innerHTML = (await api("/api/events?limit=200")).map(eventRow).join(""); }
 
 // ---------------------------------------------------------------- video wall
-$("#grid").onchange = renderWall;
+// Tiles are updated in place: only a tile whose camera changed reloads its stream, so adding or
+// moving one camera never restarts the others.
+let wallLayout = localStorage.getItem("ellalon_wall_layout") || "", wallLayouts = [];
+$("#grid").value = localStorage.getItem("ellalon_wall_grid") || "2";
+$("#grid").onchange = wallChanged;
+const wallN = () => +$("#grid").value;
+const tileSrc = (cam, n) => `/modules/streaming/stream.html?src=cam_${cam.id}${cam.substream_url && n > 2 ? "_sub" : ""}&mode=webrtc,mse`;
+const wallNow = () => Array.from({ length: wallN() ** 2 }, (_, i) => (cameras.some((c) => c.id === wallTiles[i]) ? wallTiles[i] : null));
+
 function renderWall() {
-  const n = +$("#grid").value, wall = $("#wall");
+  const n = wallN(), wall = $("#wall");
   wall.style.gridTemplateColumns = `repeat(${n},1fr)`; wall.style.gridTemplateRows = `repeat(${n},1fr)`;
-  wall.innerHTML = "";
-  for (let i = 0; i < n * n; i++) {
-    const cid = wallTiles[i], cam = cameras.find((c) => c.id === cid);
-    const t = document.createElement("div");
-    t.className = "tile" + (cam ? "" : " empty"); t.dataset.cam = cid || "";
-    t.innerHTML = cam
-      ? `<iframe src="/modules/streaming/stream.html?src=cam_${cam.id}${cam.substream_url && n > 2 ? "_sub" : ""}&mode=webrtc,mse" allow="autoplay"></iframe><span class="label">${esc(cam.name)}</span>`
-      : "+ camera";
-    t.onclick = () => pickCamera(i);
-    wall.appendChild(t);
+  while (wall.children.length > n * n) wall.lastElementChild.remove();
+  while (wall.children.length < n * n) wall.appendChild(makeTile());
+  [...wall.children].forEach((t, i) => updateTile(t, i, n));
+}
+function makeTile() {
+  const t = document.createElement("div");
+  t.className = "tile empty"; t.draggable = true;
+  t.innerHTML = `<div class="tvid"></div><span class="label hidden"></span><button type="button" class="tclose hidden" title="Remove from wall">×</button>
+    <span class="thint">+ camera<br><small>drag from the list or click</small></span>`;
+  t.onclick = () => pickCamera(+t.dataset.i);
+  t.querySelector(".tclose").onclick = (e) => { e.stopPropagation(); setTile(+t.dataset.i, null); };
+  t.ondragstart = (e) => {
+    if (!t.dataset.cam) return e.preventDefault();
+    e.dataTransfer.setData("text/plain", JSON.stringify({ from: +t.dataset.i })); e.dataTransfer.effectAllowed = "move";
+  };
+  t.ondragover = (e) => { e.preventDefault(); t.classList.add("drop"); };
+  t.ondragleave = () => t.classList.remove("drop");
+  t.ondrop = (e) => {
+    e.preventDefault(); t.classList.remove("drop");
+    let d; try { d = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { return; }
+    const to = +t.dataset.i;
+    if (d.cam) setTile(to, d.cam);
+    else if (Number.isInteger(d.from) && d.from !== to) {
+      const x = wallTiles[d.from] ?? null; wallTiles[d.from] = wallTiles[to] ?? null; wallTiles[to] = x; wallChanged();
+    }
+  };
+  return t;
+}
+function updateTile(t, i, n) {
+  const cam = cameras.find((c) => c.id === wallTiles[i]), src = cam ? tileSrc(cam, n) : "";
+  t.dataset.i = i; t.dataset.cam = cam ? cam.id : "";
+  t.classList.toggle("empty", !cam);
+  if ((t.dataset.src || "") !== src) {          // only this tile reconnects
+    t.dataset.src = src;
+    t.querySelector(".tvid").innerHTML = src ? `<iframe src="${src}" allow="autoplay; fullscreen"></iframe>` : "";
   }
+  const lbl = t.querySelector(".label"); lbl.textContent = cam ? cam.name : ""; lbl.classList.toggle("hidden", !cam);
+  t.querySelector(".tclose").classList.toggle("hidden", !cam);
+  t.querySelector(".thint").classList.toggle("hidden", !!cam);
+}
+function wallChanged() {
+  localStorage.setItem("ellalon_wall", JSON.stringify(wallTiles)); localStorage.setItem("ellalon_wall_grid", $("#grid").value);
+  renderWall(); renderWallSide(); layoutStatus();
+}
+function setTile(i, cid) { wallTiles[i] = cid; wallChanged(); }
+function addToFreeTile(cid) {
+  const now = wallNow(), i = now.indexOf(null);
+  if (i < 0) return layoutMsg("The wall is full - drag the camera onto a tile to replace it, or choose a bigger grid.", true);
+  setTile(i, cid);
 }
 function pickCamera(i) {
   $("#pickList").innerHTML = cameras.map((c) => `<button value="${c.id}">${esc(c.name)} <span class="muted">${esc(c.location || "")}</span></button>`).join("");
   const d = $("#picker"); d.showModal();
-  d.onclose = () => {
-    if (d.returnValue === "cancel") return;
-    wallTiles[i] = d.returnValue === "clear" ? null : +d.returnValue;
-    localStorage.setItem("ellalon_wall", JSON.stringify(wallTiles)); renderWall();
-  };
+  d.onclose = () => { if (d.returnValue !== "cancel") setTile(i, d.returnValue === "clear" ? null : +d.returnValue); };
 }
-function applyWall(layout) {
-  $("#grid").value = String(Math.min(4, Math.max(1, layout.cols || 2)));
-  wallTiles = layout.tiles || []; renderWall();
+function applyWall(layout, name) {
+  $("#grid").value = String(Math.min(6, Math.max(1, layout.cols || 2)));
+  wallTiles = [...(layout.tiles || [])];
+  if (name !== undefined) { wallLayout = name; localStorage.setItem("ellalon_wall_layout", name); }
+  wallChanged(); fillLayoutSel();
 }
+$("#wallClear").onclick = () => { if (wallNow().some(Boolean) && confirm("Remove all cameras from the wall?")) { wallTiles = []; wallChanged(); } };
+
+// ---- camera list (left side)
+const sideHidden = () => localStorage.getItem("ellalon_wall_side") === "hidden";
+$("#wallSide").classList.toggle("hidden", sideHidden());
+$("#wallSideBtn").onclick = () => {
+  localStorage.setItem("ellalon_wall_side", sideHidden() ? "shown" : "hidden");
+  $("#wallSide").classList.toggle("hidden", sideHidden());
+};
+$("#wallSearch").oninput = renderWallSide;
+function renderWallSide() {
+  const q = $("#wallSearch").value.trim().toLowerCase(), on = new Set(wallNow().filter(Boolean));
+  const list = cameras.filter((c) => !q || `${c.name} ${c.location || ""} ${c.settings?.ip || ""}`.toLowerCase().includes(q));
+  const groups = {}; list.forEach((c) => (groups[c.location || "No location"] ||= []).push(c));
+  const names = Object.keys(groups).sort(), heads = !(names.length === 1 && names[0] === "No location");
+  $("#wallCams").innerHTML = names.map((g) => (heads ? `<div class="wgroup">${esc(g)}</div>` : "") + groups[g].map((c) => {
+    const [cls, text] = CAM_STATE[c.status?.state] || CAM_STATE.checking;
+    return `<div class="wcam${on.has(c.id) ? " on" : ""}" draggable="true" data-id="${c.id}" title="${esc(text)} - drag to a tile or click to add">
+      <span class="dot ${cls}"></span><span class="wname">${esc(c.name)}</span>${on.has(c.id) ? '<span class="small">on wall</span>' : ""}</div>`;
+  }).join("")).join("") || `<p class="muted small">${cameras.length ? "No camera matches" : "No cameras yet - add them in the Cameras tab"}</p>`;
+  $("#wallCams").querySelectorAll(".wcam").forEach((e) => {
+    e.ondragstart = (ev) => { ev.dataTransfer.setData("text/plain", JSON.stringify({ cam: +e.dataset.id })); ev.dataTransfer.effectAllowed = "copy"; };
+    e.onclick = () => addToFreeTile(+e.dataset.id);
+  });
+}
+async function refreshWallCams() {
+  try { cameras = await api("/api/cameras"); } catch { return; }
+  renderWall(); renderWallSide();   // statuses update; streams are not restarted
+}
+setInterval(() => { if (token && me && !$("#tab-wall").classList.contains("hidden")) refreshWallCams(); }, 20000);
+
+// ---- saved layouts (stored by the video wall service, shared by all users)
+let msgTimer;
+function layoutMsg(text, bad) {
+  const m = $("#layoutMsg"); m.textContent = text; m.className = "small " + (bad ? "err" : "muted");
+  clearTimeout(msgTimer); if (text) msgTimer = setTimeout(layoutStatus, 5000);
+}
+function fillLayoutSel() {
+  $("#layoutSel").innerHTML = `<option value="">— not saved —</option>` +
+    wallLayouts.map((l) => `<option ${l.name === wallLayout ? "selected" : ""}>${esc(l.name)}</option>`).join("");
+  $("#layoutSave").disabled = $("#layoutDel").disabled = !wallLayouts.some((l) => l.name === wallLayout);
+}
+function layoutStatus() {
+  const l = wallLayouts.find((x) => x.name === wallLayout), m = $("#layoutMsg"); m.className = "small muted";
+  if (!l) return (m.textContent = "");
+  const n = wallN(), saved = Array.from({ length: n * n }, (_, i) => l.tiles?.[i] ?? null);
+  m.textContent = l.cols !== n || JSON.stringify(saved) !== JSON.stringify(wallNow()) ? "● unsaved changes" : "";
+}
+async function loadLayouts() {
+  try { wallLayouts = await mod("videowall", "/layouts"); }
+  catch { wallLayouts = []; return layoutMsg("Saved layouts are unavailable - is the Video Wall module running? (System tab)", true); }
+  if (wallLayout && !wallLayouts.some((l) => l.name === wallLayout)) wallLayout = "";
+  fillLayoutSel(); layoutStatus();
+}
+$("#layoutSel").onchange = () => {
+  const l = wallLayouts.find((x) => x.name === $("#layoutSel").value);
+  if (!l) { wallLayout = ""; localStorage.setItem("ellalon_wall_layout", ""); return fillLayoutSel(), layoutStatus(); }
+  applyWall(l, l.name); layoutMsg(`Loaded "${l.name}"`);
+};
+async function saveLayout(name) {
+  const n = wallN();
+  try {
+    await mod("videowall", `/layouts/${encodeURIComponent(name)}`, { method: "PUT", body: { name, rows: n, cols: n, tiles: wallNow() } });
+    wallLayout = name; localStorage.setItem("ellalon_wall_layout", name);
+    await loadLayouts(); layoutMsg(`Saved "${name}"`);
+  } catch (err) { layoutMsg("Could not save: " + errText(err), true); }
+}
+$("#layoutSave").onclick = () => wallLayout && saveLayout(wallLayout);
+$("#layoutSaveAs").onclick = () => {
+  const name = (prompt("Name for this layout:", wallLayout || "") || "").trim();
+  if (!name) return;
+  if (/[\/\\?#%]/.test(name) || name.length > 60) return layoutMsg("Use a name up to 60 characters without / \\ ? # %", true);
+  if (wallLayouts.some((l) => l.name === name) && name !== wallLayout && !confirm(`A layout called "${name}" exists. Replace it?`)) return;
+  saveLayout(name);
+};
+$("#layoutDel").onclick = async () => {
+  if (!wallLayout || !confirm(`Delete the saved layout "${wallLayout}"? The wall itself stays as it is.`)) return;
+  try { await mod("videowall", `/layouts/${encodeURIComponent(wallLayout)}`, { method: "DELETE" }); wallLayout = ""; localStorage.setItem("ellalon_wall_layout", ""); await loadLayouts(); layoutMsg("Layout deleted"); }
+  catch (err) { layoutMsg(errText(err), true); }
+};
 function flashCamera(id) {
   document.querySelectorAll(`.tile[data-cam="${id}"]`).forEach((t) => { t.classList.add("alert"); setTimeout(() => t.classList.remove("alert"), 8000); });
 }
