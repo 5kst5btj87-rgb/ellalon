@@ -530,7 +530,26 @@ $("#camTest").onclick = async () => {
     const line = (n, x) => `${n}: ${CAM_STATE[x.state]?.[1] || x.state} - ${x.detail}`;
     msg.className = r.main.state === "online" && (!r.sub || r.sub.state === "online") ? "ok" : "err";
     msg.textContent = line("Main stream", r.main) + (r.sub ? "   ·   " + line("Substream", r.sub) : "");
+    if (["auth", "path", "error"].includes(r.main.state)) msg.textContent += "   →  Try “Auto-detect” to find the right address.";
   } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
+};
+$("#camAuto").onclick = async () => {
+  const f = $("#camEdit"), msg = $("#camMsg"), btn = $("#camAuto");
+  msg.className = "muted"; msg.textContent = "Looking for the right stream address (ONVIF, then known formats)…"; btn.disabled = true;
+  try {
+    const r = await api("/api/cameras/autodetect", { method: "POST", body: formData(f) });
+    const lines = r.tried.map((t) => `${t.state === "online" ? "✓" : "✗"} ${t.what} - ${CAM_STATE[t.state]?.[1] || t.state}: ${t.detail}`);
+    if (r.found) {
+      el(f, "brand").value = "rtsp"; el(f, "port").value = r.found.port;
+      el(f, "main_path").value = r.found.main_path; el(f, "sub_path").value = r.found.sub_path; brandUi(f);
+      msg.className = "ok";
+      msg.innerHTML = `<b>Found a working address (${esc(r.found.how)}).</b> It is filled in below as a custom address - click Save.<br><span class="small">${lines.map(esc).join("<br>")}</span>`;
+    } else {
+      msg.className = "err";
+      msg.innerHTML = `<b>${esc(r.advice || "No working address found.")}</b><br><span class="small">${lines.map(esc).join("<br>")}</span>`;
+    }
+  } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
+  btn.disabled = false;
 };
 setInterval(() => { if (token && !$("#tab-cameras").classList.contains("hidden")) loadCameras(); }, 15000);
 

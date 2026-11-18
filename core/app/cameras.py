@@ -213,7 +213,24 @@ async def _camera_clock_offset(c: httpx.AsyncClient, url: str) -> float:
         return 0
 
 
-async def onvif_stream_uris(ip: str, port: int, user: str, pw: str) -> list[str]:
+def profiles_by_source(xml: str) -> list[list[str]]:
+    """GetProfiles -> profile tokens grouped by video input (channel), in the device's order."""
+    import xml.etree.ElementTree as ET
+    loc = lambda t: t.rsplit("}", 1)[-1]
+    groups: dict[str, list[str]] = {}
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return []
+    for prof in root.iter():
+        if loc(prof.tag) != "Profiles" or not prof.get("token"):
+            continue
+        src = next((e.text.strip() for e in prof.iter() if loc(e.tag) == "SourceToken" and e.text), prof.get("token"))
+        groups.setdefault(src, []).append(prof.get("token"))
+    return list(groups.values())
+
+
+async def onvif_stream_uris(ip: str, port: int, user: str, pw: str, channel: int | None = None) -> list[str]:
     """Return RTSP URIs of the first two media profiles (main, sub).
 
     Logs in the way the camera accepts: WS-Security digest using the camera's own clock,
@@ -246,7 +263,13 @@ async def onvif_stream_uris(ip: str, port: int, user: str, pw: str) -> list[str]
                 raise HTTPException(400, "ONVIF: the camera rejected the username or password"
                                          f" ({last}). Some cameras need a separate ONVIF user"
                                          " or ONVIF enabled in their settings.")
-            for token in re.findall(r'<[^>]*Profiles[^>]*\stoken="([^"]+)"', profiles)[:2]:
+            tokens = re.findall(r'<[^>]*Profiles[^>]*\stoken="([^"]+)"', profiles)
+            if channel:                      # NVR: profiles of the Nth video input
+                groups = profiles_by_source(profiles)
+                if channel > len(groups):
+                    raise HTTPException(400, f"The device reports {len(groups)} channel(s) over ONVIF - no channel {channel}")
+                tokens = groups[channel - 1]
+            for token in tokens[:2]:
                 body = ('<GetStreamUri xmlns="http://www.onvif.org/ver10/media/wsdl"><StreamSetup>'
                         '<Stream xmlns="http://www.onvif.org/ver10/schema">RTP-Unicast</Stream>'
                         '<Transport xmlns="http://www.onvif.org/ver10/schema"><Protocol>RTSP</Protocol>'
@@ -651,9 +674,96 @@ async def probe_camera(body: CameraIn, _=Depends(require("admin"))):
     """Test a camera's settings before saving: builds the URLs and checks main + substream."""
     main, sub = (body.url, body.substream_url) if body.url else await build_urls(body)
     res = {"main": await probe_url(main)}
-    if sub:
+    if sub and res["main"]["state"] in ("auth", "offline"):
+        res["sub"] = {"state": res["main"]["state"], "detail": "not tested (main stream failed the same way)"}
+    elif sub:
         res["sub"] = await probe_url(sub)
     return res
+
+
+# Other address formats used by Provision-ISR / OEM recorders. {ch} = channel, {ch2} = two digits.
+NVR_ALTERNATIVES = [
+    ("Provision / TVT (short)", "/chID={ch}&streamType=main", "/chID={ch}&streamType=sub"),
+    ("Provision / TVT (2-digit)", "/chID={ch2}&streamType=main&linkType=tcp", "/chID={ch2}&streamType=sub&linkType=tcp"),
+    ("Provision Gen-2", "/ch{ch}/main/av_stream", "/ch{ch}/sub/av_stream"),
+    ("Hikvision-type", "/Streaming/Channels/{ch}01", "/Streaming/Channels/{ch}02"),
+    ("Dahua-type", "/cam/realmonitor?channel={ch}&subtype=0", "/cam/realmonitor?channel={ch}&subtype=1"),
+    ("Uniview-type", "/unicast/c{ch}/s0/live", "/unicast/c{ch}/s1/live"),
+]
+MAX_LOGINS = 4          # recorders lock the account after ~5 refused logins
+
+
+class AutoIn(CamSettings):
+    name: str = ""
+
+
+@router.post("/cameras/autodetect")
+async def autodetect(body: AutoIn, _=Depends(require("admin"))):
+    """Find a working stream address: ONVIF (exact per-channel address) first, then known formats.
+    Paths that a device rejects without asking for a login cost nothing; logins are capped."""
+    s = CamSettings(**body.model_dump(exclude={"name"}))
+    s.ip = s.ip.strip()
+    if not s.ip:
+        raise HTTPException(400, "Enter the IP address first")
+    tried, logins = [], 0
+
+    def done(how, main, sub):
+        mp, sp = urlsplit(main), urlsplit(sub) if sub else None
+        return {"found": {"how": how, "port": mp.port or 554, "main_path": _pq(mp), "sub_path": _pq(sp) if sp else ""},
+                "tried": tried}
+
+    # 1. ONVIF: the recorder tells us the exact address of this channel
+    try:
+        uris = await asyncio.wait_for(onvif_stream_uris(s.ip, s.onvif_port, s.username, s.password, s.channel), 20)
+        main = _onvif_uri(uris[0], s)
+        sub = _onvif_uri(uris[1], s) if len(uris) > 1 else None
+        r = await probe_url(main)
+        logins += 1
+        tried.append({"what": f"ONVIF (port {s.onvif_port}): {_strip_creds(main)}", **r})
+        if r["state"] == "online":
+            return done("ONVIF", main, sub)
+        if r["state"] == "auth":
+            return {"found": None, "tried": tried, "advice": _auth_advice()}
+    except HTTPException as e:
+        tried.append({"what": f"ONVIF (port {s.onvif_port})", "state": "error", "detail": e.detail})
+        if "username or password" in str(e.detail):
+            return {"found": None, "tried": tried, "advice": _auth_advice()}
+    except Exception as e:
+        tried.append({"what": f"ONVIF (port {s.onvif_port})", "state": "error", "detail": e.__class__.__name__})
+    # 2. known formats: the current brand's own format first
+    cands = []
+    b = BRANDS.get(s.brand, {})
+    if b.get("main"):
+        cands.append((b["label"], b["main"], b["sub"]))
+    cands += [c for c in NVR_ALTERNATIVES if c[1] != b.get("main")]
+    for label, mt, st in cands:
+        fill = lambda t: t.replace("{ch2}", f"{s.channel:02d}").replace("{ch}", str(s.channel))
+        main, sub = _template_url(s, fill(mt)), _template_url(s, fill(st))
+        nolog = await probe_url(_strip_creds(main))          # costs no login
+        if nolog["state"] == "path" or nolog["state"] == "offline":
+            tried.append({"what": f"{label}: {_strip_creds(main)}", **nolog})
+            if nolog["state"] == "offline":
+                break
+            continue
+        if logins >= MAX_LOGINS or sum(t["state"] == "auth" for t in tried) >= 2:
+            tried.append({"what": f"{label}: {_strip_creds(main)}", "state": "skipped",
+                          "detail": "not tried, to avoid locking the account"})
+            continue
+        r = await probe_url(main)
+        logins += 1
+        tried.append({"what": f"{label}: {_strip_creds(main)}", **r})
+        if r["state"] == "online":
+            return done(label, main, sub)
+    auth = [t for t in tried if t["state"] == "auth"]
+    return {"found": None, "tried": tried,
+            "advice": _auth_advice() if auth and len(auth) == len([t for t in tried if t["state"] in ("auth", "online", "path")])
+            else "No working stream address found. Check the RTSP port (Network settings on the recorder) and the channel number."}
+
+
+def _auth_advice() -> str:
+    return ("The recorder refused the username/password on every address. Check them by logging in to the "
+            "recorder's own web page with the same user; make sure that user may view live video remotely; "
+            "and if there were many failed logins, unlock the account on the recorder (or wait 30 minutes).")
 
 
 @router.post("/cameras/batch")
