@@ -328,7 +328,8 @@ async function aiOlStatus() {
   else if (st.builtin) box.innerHTML = modInfo?.enabled
     ? `<span class="muted">● Local AI app is starting… (the first start downloads the Ollama program, about 1-3 GB - can take several minutes)</span>`
     : `<span class="err">● The Local AI app is off.</span> <button type="button" class="small" onclick="aiOlStart(this)">Start Local AI</button>`;
-  else box.innerHTML = `<span class="err">● Cannot reach Ollama at ${esc(st.url)}.</span> Check that it runs there and listens on the network (OLLAMA_HOST=0.0.0.0), or clear the address to use Ellalon's own Local AI app.`;
+  else box.innerHTML = `<span class="err">● Cannot reach Ollama at ${esc(st.url)}.</span> If you did not install Ollama there yourself:
+      <button type="button" class="small" onclick="aiUseBuiltin()">Use Ellalon's own Local AI instead</button>`;
   $("#aiOlModels").innerHTML = (st?.models || []).map((m) => `<option value="${esc(m.name)}">`).join("") + ["qwen2.5vl:7b", "qwen2.5vl:3b", "qwen3:8b"].map((x) => `<option value="${x}">`).join("");
   const p = st?.pull || {}, bar = $("#aiOlPullBar");
   bar.classList.toggle("hidden", !p.model);
@@ -339,6 +340,12 @@ async function aiOlStatus() {
   $("#aiOlPull").disabled = !!p.running || !st?.reachable;
   if ($("#aiSetDialog").open && (p.running || (st && !st.reachable && modInfo?.enabled))) aiOlT = setTimeout(aiOlStatus, 3000);
 }
+window.aiUseBuiltin = async () => {
+  el($("#aiSetForm"), "ollama_url").value = "";
+  try { await aiSaveSettings(); } catch (err) { return notify(errText(err)); }
+  $("#aiSetMsg").textContent = "";
+  aiOlStatus();
+};
 window.aiOlStart = async (b) => {
   b.disabled = true;
   try { await api("/api/modules/ollama/enable", { method: "POST" }); }
