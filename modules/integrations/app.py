@@ -258,9 +258,6 @@ async def apollo_test_api(body: ApolloTestIn, request: Request):
     saved = store.systems.get(body.system_id or "")
     if saved and not cfg.get("password"):
         cfg["password"] = saved["config"].get("password", "")
-    for k in ("doors_path", "inputs_path", "outputs_path", "events_path", "unlock_path", "auth_mode"):
-        if not str(cfg.get(k, "")).strip():
-            cfg.pop(k, None)                               # empty = find automatically
     try:
         res = await asyncio.wait_for(apollo_test(cfg), 60)
     except asyncio.TimeoutError:

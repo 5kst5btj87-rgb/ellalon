@@ -5,10 +5,12 @@ turns alarms into platform events and executes control actions. To support a new
 subclass Adapter, describe its settings in `fields`, and add it to ADAPTERS.
 """
 import asyncio
+import base64
 import csv
 import io
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 import re
 
 import httpx
@@ -228,73 +230,43 @@ class RiscoLocalAdapter(Adapter):
 
 
 # ======================================================================== Apollo
-APOLLO_KINDS = {  # device kind -> words that identify its API list
-    "door": ("door", "reader", "portal", "accesspoint"),
-    "input": ("input", "auxin", "alarmpoint", "sensor", "monitorpoint", "iopoint", "point"),
-    "output": ("output", "relay", "auxout"),
-    "event": ("event", "activit", "transaction", "alarm", "history"),
-}
-APOLLO_CANDIDATES = {  # tried when the server publishes no API description
-    "door": ["/api/doors", "/api/Doors", "/api/readers", "/api/Readers", "/api/v1/doors", "/api/AccessPoints"],
-    "input": ["/api/inputs", "/api/Inputs", "/api/auxinputs", "/api/AuxInputs", "/api/AlarmPoints", "/api/v1/inputs"],
-    "output": ["/api/outputs", "/api/Outputs", "/api/relays", "/api/Relays", "/api/auxoutputs", "/api/AuxOutputs", "/api/v1/outputs"],
-    "event": ["/api/events", "/api/Events", "/api/activities", "/api/Activities", "/api/transactions", "/api/alarms"],
-}
-APOLLO_CONFIG = ["/api/configuration", "/api/Configuration", "/api/config", "/api/Config", "/api/hardware",
-                 "/api/Hardware", "/api/devices", "/api/Devices", "/api/controllers", "/api/Controllers", "/api/system"]
-APOLLO_INDEX = ["/api", "/", "/api/$metadata", "/$metadata", "/help", "/Help", "/api/help", "/api/Help"]
-APOLLO_SPECS = ["/swagger/docs/v1", "/api/swagger/docs/v1", "/swagger/v1/swagger.json", "/api/swagger/v1/swagger.json",
-                "/swagger.json", "/api/swagger.json", "/openapi.json", "/api/openapi.json"]
-ID_KEYS = ("id", "Id", "ID", "DoorId", "doorId", "ReaderId", "readerId", "InputId", "inputId", "OutputId", "outputId",
-           "PointId", "Number", "number", "Address", "address", "Key", "key")
-NAME_KEYS = ("name", "Name", "ReaderName", "DoorName", "InputName", "OutputName", "PointName", "Description",
-             "description", "DisplayName", "displayName", "Label", "label", "Title")
-
-
-def api_paths_in(text: str) -> set[str]:
-    """Endpoint paths mentioned in an index page: links, OData service documents, $metadata, help pages."""
-    found = set()
-    for m in re.finditer(r"(?:GET|POST|PUT)[\s-]+/?(api/[A-Za-z][\w/{}.-]*)", text):
-        found.add("/" + m.group(1))
-    for m in re.finditer(r"[Hh]elp/[Aa]pi/(?:GET|POST|PUT)-(api-[\w{}-]+)", text):      # ASP.NET Web API help page
-        segs = m.group(1).split("-")
-        found.add("/" + "/".join("{" + x + "}" if x.lower() in ("id", "number", "key") else x for x in segs))
-    for m in re.finditer(r"[\"'(/](api/[A-Za-z][\w/{}.-]*)", text):
-        found.add("/" + m.group(1).rstrip("."))
-    for m in re.finditer(r'EntitySet Name="(\w+)"', text):                              # OData $metadata
-        found.add(f"/api/{m.group(1)}")
+# ---------------------------------------------------------------- Apollo APACS
+# Protocol from Apollo's own API samples (C:\APACS\Examples: ApacsApiClientLib/Client.cs, Python/BasicSample.py):
+#   every request carries   Apacs.Auth: base64("user:password")   (+ HTTP Basic, as the Python sample does)
+#   GET  api/global/permission/login      -> response header Apacs.Session, sent on every later request
+#   GET  api/objectstate/all              -> {TotalCount, Records:[{Source:{Id, Label, ParentId, TypeId}, State}]}
+#   GET  api/event?filter={...}           -> events {Date, Source, Type, Code, Cause, Person}
+#   GET  api/<typeid>/<id>/<command>      -> reader unlock|lock, relay On|Off|Pulse, input Arm|Disarm
+#   GET  api/global/permission/logout
+def apacs_utc(value) -> datetime | None:
+    """APACS returns local times with an offset (2026-05-18T11:16:01.946+03:00); filters must be plain UTC."""
     try:
-        doc = json.loads(text)
-        if isinstance(doc, dict) and isinstance(doc.get("value"), list):                 # OData service document
-            for e in doc["value"]:
-                if isinstance(e, dict) and e.get("url"):
-                    found.add("/api/" + str(e["url"]).lstrip("/"))
-        elif isinstance(doc, dict):
-            for k, v in doc.items():
-                if isinstance(v, str) and "/api/" in v:
-                    found.add("/api/" + v.split("/api/", 1)[1])
-                elif isinstance(v, str) and v.startswith("api/"):
-                    found.add("/" + v)
-        elif isinstance(doc, list) and all(isinstance(x, str) for x in doc):
-            found |= {"/api/" + x.strip("/") for x in doc if re.fullmatch(r"[A-Za-z][\w/-]*", x.strip("/"))}
-    except ValueError:
-        pass
-    for m in re.finditer(r'<collection href="([^"]+)"', text):                           # OData XML service document
-        found.add("/api/" + m.group(1).lstrip("/"))
-    return {re.sub(r"/{2,}", "/", p) for p in found if len(p) < 120}
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
 
 
-class ApolloClient:
-    """Talks to the APACS API Service (APACSAPIService, HTTPS port 8081 by default, operator login).
+def apacs_time(d: datetime) -> str:
+    return d.strftime("%Y-%m-%dT%H:%M:%S")          # the API rejects formats with a time zone
 
-    Apollo does not publish its endpoint list, so the client finds it: it reads the API description
-    (Swagger/OpenAPI) when the server offers one, otherwise it tries the usual paths. The login style
-    is detected too (HTTP Basic, then a token login). Paths set by hand in the settings always win."""
 
+def apacs_kind(type_id: str) -> str | None:
+    t = (type_id or "").lower()
+    if t.endswith("reader") and "group" not in t:
+        return "door"                                   # ASPReader, AANReader, AAN4Reader, Reader
+    if "input" in t and "group" not in t:
+        return "input"                                  # ASPInput, ASPReaderInput, Input
+    if t in ("relay", "aspstrike", "strike") or t.endswith("relay"):
+        return "output"
+    return None
+
+
+class ApacsClient:
     def __init__(self, cfg: dict):
         self.cfg = dict(cfg)
         host = (cfg.get("host") or "").strip()
-        if not host and cfg.get("base_url"):                 # settings from older versions
+        if not host and cfg.get("base_url"):                 # settings from an older version
             from urllib.parse import urlsplit
             u = urlsplit(cfg["base_url"])
             host = u.hostname or ""
@@ -302,257 +274,135 @@ class ApolloClient:
             self.cfg.setdefault("use_ssl", u.scheme == "https")
         self.host = host
         self.port = int(self.cfg.get("port") or 8081)
-        self.scheme = "https" if self.cfg.get("use_ssl", True) else "http"
-        self.base = f"{self.scheme}://{self.host}:{self.port}"
+        self.base = f"{'https' if self.cfg.get('use_ssl', False) else 'http'}://{self.host}:{self.port}/api/"
         self.user, self.pw = cfg.get("username", ""), cfg.get("password", "")
-        self.auth_mode = cfg.get("auth_mode") or ""
-        self.token = None
-        self.c = None
-        self.steps: list[dict] = []
-        self.paths = {k: cfg.get(f"{k}s_path") or "" for k in ("door", "input", "output", "event")}
-        self.paths["unlock"] = cfg.get("unlock_path") or ""
-        self.probes: dict[str, str] = {}               # path -> what the server answered (for diagnosis)
-        self.listed: set[str] = set()                  # endpoints the server itself mentions
-        self.root_text = ""
+        auth = base64.b64encode(f"{self.user}:{self.pw}".encode()).decode()
+        self.headers = {"Apacs.Auth": auth, "Apacs.Session": "", "User-Agent": "Ellalon/1.0"}
+        self.c: httpx.AsyncClient | None = None
 
     async def __aenter__(self):
         if not self.host:
             raise ValueError("Enter the APACS server IP address")
-        self.c = httpx.AsyncClient(base_url=self.base, verify=bool(self.cfg.get("verify_tls")), timeout=10,
-                                   follow_redirects=True)
+        self.c = httpx.AsyncClient(base_url=self.base, timeout=15, verify=bool(self.cfg.get("verify_tls")),
+                                   auth=(self.user, self.pw) if self.user else None)
         return self
 
     async def __aexit__(self, *a):
+        try:
+            if self.headers["Apacs.Session"]:
+                await self.c.get("global/permission/logout", headers=self.headers)
+        except Exception:
+            pass
         await self.c.aclose()
 
-    def step(self, ok: bool, text: str):
-        self.steps.append({"ok": ok, "text": text})
-
-    # ---------------------------------------------------------------- login
-    def _headers(self):
-        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
-
-    async def request(self, method, path, **kw):
-        auth = (self.user, self.pw) if self.auth_mode == "basic" and self.user else None
-        r = await self.c.request(method, path, auth=auth, headers=self._headers(), **kw)
-        if method == "GET":
-            ct = (r.headers.get("content-type") or "").split(";")[0] or "no type"
-            self.probes[path] = f"{r.status_code} {ct} {len(r.content)} B"
-        return r
-
-    async def connect(self):
+    async def login(self):
         try:
-            r = await self.c.get("/api")
+            r = await self.c.get("global/permission/login", headers=self.headers)
         except httpx.ConnectError as e:
-            hint = " - is the APACS API Service started, and the port open in the Windows firewall?"
-            if "SSL" in str(e) or "certificate" in str(e).lower():
-                hint = " - HTTPS problem: untick 'Check the HTTPS certificate', or the service may run plain HTTP (untick HTTPS)"
-            raise ValueError(f"Cannot reach {self.base}{hint}")
+            if "SSL" in str(e) or "certificate" in str(e).lower() or "wrong version" in str(e).lower():
+                raise ValueError(f"Cannot connect to {self.base}: HTTPS problem - untick or tick 'HTTPS' to match the APACS API Service")
+            raise ValueError(f"Cannot reach {self.base} - is the APACS API Service started, and port {self.port} open in the Windows firewall?")
         except httpx.HTTPError as e:
+            if self.cfg.get("use_ssl") is False and "RemoteProtocolError" in e.__class__.__name__:
+                raise ValueError(f"{self.base} did not answer plain HTTP - tick 'HTTPS'")
             raise ValueError(f"Cannot reach {self.base} ({e.__class__.__name__})")
-        self.step(True, f"Reached the APACS API Service at {self.base}")
-        if self.auth_mode == "token":
-            await self._token_login()
-        elif self.auth_mode != "basic":
-            await self._detect_login(r)
+        sess = r.headers.get("Apacs.Session")
+        if r.status_code >= 400 or not sess:
+            detail = re.sub(r"\s+", " ", r.text)[:160]
+            raise ValueError(f"APACS refused the login (HTTP {r.status_code}){': ' + detail if detail else ''} - "
+                             "use an APACS operator name and password")
+        self.headers["Apacs.Session"] = sess
 
-    async def _detect_login(self, first):
-        r = await self.c.get("/api", auth=(self.user, self.pw)) if self.user else first
-        if r.status_code not in (401, 403):
-            self.auth_mode = "basic"                           # confirmed later on a data request
-            return
-        if await self._token_login(quiet=True):
-            return
-        raise ValueError("APACS rejected the operator login - check the user name / password (an APACS operator), "
-                         "and that the APACS licence allows web sessions")
+    async def get(self, path, params=None):
+        r = await self.c.get(path, params=params, headers=self.headers)
+        if r.status_code == 401:                          # session expired: log in again once
+            await self.login()
+            r = await self.c.get(path, params=params, headers=self.headers)
+        if r.status_code == 204:
+            return None
+        if r.status_code >= 400:
+            raise ValueError(f"APACS answered HTTP {r.status_code} for {path}: {re.sub(r'\s+', ' ', r.text)[:160]}")
+        try:
+            return r.json()
+        except ValueError:
+            return r.text
 
-    async def _token_login(self, quiet=False) -> bool:
-        tries = [("/token", "form"), ("/api/token", "form"), ("/api/login", "json"), ("/api/auth/login", "json"),
-                 ("/api/Login", "json"), ("/api/session", "json")]
-        for path, kind in tries:
+    async def objects(self) -> list[dict]:
+        """Every object with its live state: [{id, label, parent, type, state}]."""
+        data = None
+        for path, params in (("objectstate/all", None), ("objectstate", {"filter": json.dumps({"Start": 0, "Count": 20000})})):
             try:
-                if kind == "form":
-                    r = await self.c.post(path, data={"grant_type": "password", "username": self.user, "password": self.pw})
-                else:
-                    r = await self.c.post(path, json={"username": self.user, "password": self.pw,
-                                                      "UserName": self.user, "Password": self.pw})
-            except httpx.HTTPError:
-                continue
-            if r.status_code in (200, 201):
-                try:
-                    j = r.json()
-                except ValueError:
-                    j = {}
-                tok = _pick(j, "access_token", "token", "Token", "AccessToken", "accessToken", "SessionId", "sessionId") \
-                    if isinstance(j, dict) else (j if isinstance(j, str) else None)
-                if tok or r.cookies:
-                    self.token = str(tok) if tok else None
-                    self.auth_mode = "token"
-                    self.cfg["token_path"] = path
-                    self.step(True, f"Logged in as {self.user} (token login {path})")
-                    return True
-        if not quiet:
-            raise ValueError("APACS rejected the operator login")
-        return False
-
-    # ---------------------------------------------------------------- discovery
-    async def discover(self):
-        await self._index_pages()
-        spec = None
-        for p in APOLLO_SPECS:
-            try:
-                r = await self.request("GET", p)
-                if r.status_code == 200 and "paths" in r.text[:200000]:
-                    spec = r.json()
-                    break
-            except (httpx.HTTPError, ValueError):
-                continue
-        if spec:
-            n = self._from_spec(spec)
-            self.step(True, f"Read the API description ({n} endpoints)")
-        elif self.listed:
-            self._from_spec({"paths": {p: {"get": {}, "post": {}} for p in self.listed}})
-            self.step(True, f"The server lists {len(self.listed)} endpoint(s): " + ", ".join(sorted(self.listed)[:12])
-                      + ("…" if len(self.listed) > 12 else ""))
-        else:
-            self.step(True, "The server publishes no API description - trying the usual endpoints")
-
-    async def _index_pages(self):
-        """Root page, OData service document / $metadata, ASP.NET or WCF help pages: collect endpoint names."""
-        for p in APOLLO_INDEX:
-            try:
-                r = await self.request("GET", p)
-            except httpx.HTTPError:
-                continue
-            if r.status_code != 200:
-                continue
-            text = r.text[:400000]
-            if p == "/api":
-                self.root_text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()[:200]
-            self.listed |= api_paths_in(text)
-
-    @staticmethod
-    def rows_for(kind, data) -> list:
-        """The rows of one kind in an answer: a plain list, a wrapped list, or a list inside a configuration object."""
-        if isinstance(data, list):
-            return data
-        if not isinstance(data, dict):
-            return []
-        wrapped = _as_list(data)
-        if wrapped and wrapped is not None and not (len(wrapped) == 1 and wrapped[0] is data):
-            return wrapped
-        words = APOLLO_KINDS[kind]
-        for k, v in data.items():                         # configuration: {"Readers": [...], "Inputs": [...]}
-            if isinstance(v, list) and any(w in k.lower() for w in words):
-                if kind == "input" and "output" in k.lower():
-                    continue
-                return v
-        for v in data.values():                            # one level deeper
-            if isinstance(v, dict):
-                rows = ApolloClient.rows_for(kind, v)
-                if rows:
-                    return rows
-        return []
-
-    def diagnosis(self) -> str:
-        shown = list(self.probes.items())[:40]
-        return "; ".join(f"{p} → {a}" for p, a in shown)
-
-    def _from_spec(self, spec) -> int:
-        base = (spec.get("basePath") or "").rstrip("/")
-        paths = spec.get("paths") or {}
-        gets = [base + p for p, ops in paths.items() if "get" in ops and "{" not in p]
-        posts = [(base + p) for p, ops in paths.items() if ("post" in ops or "put" in ops)]
-        for kind, words in APOLLO_KINDS.items():
-            if self.paths.get(kind):
-                continue
-            hits = [p for p in gets if any(w in p.rsplit("/", 1)[-1].lower() for w in words)]
-            if kind == "input":
-                hits = [p for p in hits if "output" not in p.lower()]
-            if hits:
-                self.paths[kind] = min(hits, key=len)
-        if not self.paths.get("unlock"):
-            for p in posts:
-                low = p.lower()
-                if any(w in low for w in ("door", "reader")) and any(w in low for w in ("unlock", "open", "grant", "pulse", "momentary")):
-                    self.paths["unlock"] = re.sub(r"\{[^}]+\}", "{door}", p, count=1)
-                    break
-        return len(paths)
-
-    async def fetch(self, kind) -> list[dict]:
-        tried = [self.paths[kind]] if self.paths.get(kind) else APOLLO_CANDIDATES[kind] + APOLLO_CONFIG
-        for path in tried:
-            try:
-                r = await self.request("GET", path)
-            except httpx.HTTPError:
-                continue
-            if r.status_code in (401, 403):
-                if self.auth_mode == "basic" and await self._token_login(quiet=True):
-                    r = await self.request("GET", path)
-                if r.status_code in (401, 403):
-                    raise ValueError("APACS refused access with this operator - check the operator's rights")
-            if r.status_code != 200:
-                continue
-            try:
-                rows = self.rows_for(kind, r.json())
+                data = await self.get(path, params)
+                break
             except ValueError:
                 continue
-            if not rows and path in APOLLO_CONFIG:
+        if data is None:                                  # fall back to the configuration tree (no states)
+            data = await self.get("treeobject", {"filter": json.dumps({"Start": 0, "Count": 20000})})
+        recs = data.get("Records", data) if isinstance(data, dict) else (data or [])
+        out = []
+        for r in recs if isinstance(recs, list) else []:
+            src = r.get("Source") if isinstance(r, dict) and isinstance(r.get("Source"), dict) else r
+            if not isinstance(src, dict) or src.get("Id") is None:
                 continue
-            items = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                num = _pick(row, *ID_KEYS)
-                if num is None:
-                    continue
-                items.append({"kind": kind, "id": str(num), "name": str(_pick(row, *NAME_KEYS) or f"{kind.title()} {num}"),
-                              "where": str(_pick(row, "ControllerName", "Controller", "PanelName", "Panel", "Site",
-                                                  "SiteName", "Area", "Location") or "")})
-            self.paths[kind] = path
-            return items
-        self.paths[kind] = ""
-        return []
-
-    def discovered(self) -> dict:
-        out = {f"{k}s_path": v for k, v in self.paths.items() if k in ("door", "input", "output", "event") and v}
-        if self.paths.get("unlock"):
-            out["unlock_path"] = self.paths["unlock"]
-        out["auth_mode"] = self.auth_mode
+            out.append({"id": str(src["Id"]), "label": src.get("Label") or str(src["Id"]), "parent": str(src.get("ParentId") or ""),
+                        "type": src.get("TypeId") or "", "state": r.get("State") if src is not r else None,
+                        "active": src.get("IsActive", True)})
         return out
+
+    async def events_since(self, since: datetime) -> list[dict]:
+        flt = {"Start": 0, "Count": 200, "Expressions": [{"Property": "Date", "Operation": "Gt", "Value": apacs_time(since)}],
+               "Orders": [{"Property": "Date", "Asc": True}]}
+        data = await self.get("event", {"filter": json.dumps(flt)})
+        recs = data.get("Records", []) if isinstance(data, dict) else (data or [])
+        return [e for e in recs if isinstance(e, dict)]
+
+    async def command(self, type_id: str, oid, cmd: str):
+        await self.get(f"{type_id.lower()}/{oid}/{cmd}")
+
+
+def apacs_devices(objs: list[dict]) -> list[dict]:
+    by_id = {o["id"]: o for o in objs}
+    devs = []
+    for o in objs:
+        kind = apacs_kind(o["type"])
+        if not kind:
+            continue
+        parent = by_id.get(o["parent"])
+        if o["type"].lower() == "aspreaderinput" and parent:   # a door's own input, e.g. "Door forced open"
+            where = parent["label"]
+        else:
+            where = parent["label"] if parent else ""
+        devs.append({"kind": kind, "id": o["id"], "name": o["label"], "type": o["type"], "state": o["state"] or "",
+                     "where": where, "active": o["active"]})
+    order = {"door": 0, "input": 1, "output": 2}
+    return sorted(devs, key=lambda d: (order[d["kind"]], d["name"]))
 
 
 async def apollo_test(cfg: dict) -> dict:
-    """Connect, log in, find the endpoints and list every door / input / output."""
-    found = {"door": [], "input": [], "output": []}
+    """Log in, read every object and list the doors / inputs / outputs to choose from."""
+    steps = []
+    step = lambda ok, text: steps.append({"ok": ok, "text": text})
     if not (cfg.get("host") or cfg.get("base_url") or "").strip():
         return {"ok": False, "steps": [{"ok": False, "text": "Enter the APACS server IP address"}], "devices": [], "found": {}}
-    async with ApolloClient(cfg) as a:
-        try:
-            await a.connect()
-            await a.discover()
-            for kind, label in (("door", "doors"), ("input", "inputs"), ("output", "outputs")):
-                found[kind] = await a.fetch(kind)
-                a.step(bool(found[kind]), f"{len(found[kind])} {label}" + (f" ({a.paths[kind]})" if a.paths[kind] else " - no list found"))
-            if a.auth_mode == "basic" and any(found.values()):
-                a.step(True, f"Logged in as {a.user} (basic login)")
-            elif a.auth_mode == "basic":
-                a.step(False, "The API did not ask for a login on its start page - its own login method was not recognised")
-            await a.fetch("event") if not a.paths.get("event") else None
-            a.step(bool(a.paths.get("event")), "Live events: " + (a.paths["event"] or "no event list found - events can be pushed to Ellalon instead"))
-            a.step(bool(a.paths.get("unlock")), "Door unlock: " + (a.paths["unlock"] or "not found (set it under Advanced)"))
-        except ValueError as e:
-            a.step(False, str(e))
-            return {"ok": False, "steps": a.steps, "devices": [], "found": {}}
-        devices = found["door"] + found["input"] + found["output"]
-        ok = bool(devices)
-        if not ok:
-            if a.root_text:
-                a.step(False, f"The API's start page says: {a.root_text}")
-            a.step(False, "What the server answered: " + a.diagnosis())
-            a.step(False, "Connected, but no doors, inputs or outputs were found. Send this list to support, or set the "
-                          "endpoint paths under Advanced (from the API documentation on the APACS server).")
-        return {"ok": ok, "steps": a.steps, "devices": devices, "found": a.discovered()}
+    try:
+        async with ApacsClient(cfg) as a:
+            await a.login()
+            step(True, f"Logged in to the APACS API at {a.base} as {a.user}")
+            objs = await a.objects()
+            devs = apacs_devices(objs)
+            n = {k: sum(d["kind"] == k for d in devs) for k in ("door", "input", "output")}
+            step(bool(devs), f"{len(objs)} objects in APACS: {n['door']} doors, {n['input']} inputs, {n['output']} outputs")
+            try:
+                await a.events_since(datetime.now(timezone.utc).replace(tzinfo=None))
+                step(True, "Live events: available")
+            except ValueError as e:
+                step(False, f"Live events not available: {e}")
+    except ValueError as e:
+        step(False, str(e))
+        return {"ok": False, "steps": steps, "devices": [], "found": {}}
+    if not devs:
+        step(False, "Logged in, but APACS returned no doors, inputs or outputs for this operator")
+    return {"ok": bool(devs), "steps": steps, "devices": devs, "found": {}}
 
 
 class ApolloAdapter(Adapter):
@@ -563,64 +413,99 @@ class ApolloAdapter(Adapter):
         {"key": "port", "label": "Port", "type": "number", "default": 8081},
         {"key": "username", "label": "APACS operator"},
         {"key": "password", "label": "Password", "type": "password"},
-        {"key": "use_ssl", "label": "HTTPS (APACS default)", "type": "checkbox", "default": True},
+        {"key": "use_ssl", "label": "HTTPS", "type": "checkbox", "default": False},
         {"key": "verify_tls", "label": "Check the HTTPS certificate", "type": "checkbox", "advanced": True},
-        {"key": "doors_path", "label": "Doors list path", "advanced": True, "placeholder": "found automatically"},
-        {"key": "inputs_path", "label": "Inputs list path", "advanced": True, "placeholder": "found automatically"},
-        {"key": "outputs_path", "label": "Outputs list path", "advanced": True, "placeholder": "found automatically"},
-        {"key": "events_path", "label": "Events list path", "advanced": True, "placeholder": "found automatically"},
-        {"key": "unlock_path", "label": "Door unlock path, {door} = door id", "advanced": True, "placeholder": "found automatically"},
-        {"key": "auth_mode", "label": "Login method", "advanced": True, "placeholder": "found automatically"},
-        {"key": "poll_seconds", "label": "Event poll interval (seconds)", "type": "number", "default": 5, "advanced": True},
+        {"key": "poll_seconds", "label": "Check for events every (seconds)", "type": "number", "default": 3, "advanced": True},
     ]
-    actions = {"door": ["unlock"]}
-    RULES = [  # (text contains, event type, severity, alarm?)
-        (("forced",), "alarm", "critical", True),
-        (("held", "ajar", "propped"), "door_held", "warning", False),
-        (("duress",), "alarm", "critical", True),
-        (("tamper",), "tamper", "high", False),
+    actions = {"door": ["onepass", "unlock", "lock"], "output": ["pulse", "on", "off"], "input": ["arm", "disarm"]}
+    COMMANDS = {"onepass": "OnePass", "unlock": "Unlock", "lock": "Lock", "pulse": "Pulse", "on": "On", "off": "Off",
+                "arm": "Arm", "disarm": "Disarm"}             # APACS API manual, chapter 10
+    # (event type, code words) -> (Ellalon event, severity, alarm?)
+    RULES = [
+        ("alarm", ("forced",), "door_forced", "critical", True),
+        ("alarm", ("held",), "door_held", "warning", False),
+        ("alarm", ("duress",), "duress", "critical", True),
+        ("alarm", ("tamper",), "tamper", "high", True),
+        ("alarm", ("",), "alarm", "high", True),
+        ("access", ("grant",), "access_granted", "info", False),
+        ("access", ("",), "access_denied", "low", False),
+        ("connect", ("offline", "off"), "offline", "warning", False),
+        ("connect", ("",), "online", "info", False),
+        ("systemerror", ("",), "system_error", "high", False),
+    ]
+    RULES_TEXT = [  # pushed events (inbound URL), free text
+        (("forced",), "alarm", "critical", True), (("held", "ajar", "propped"), "door_held", "warning", False),
+        (("duress",), "alarm", "critical", True), (("tamper",), "tamper", "high", False),
         (("denied", "invalid", "unknown card", "rejected"), "access_denied", "low", False),
-        (("granted", "valid access", "access ok"), "access_granted", "info", False),
-        (("alarm",), "alarm", "high", True),
+        (("granted", "valid access", "access ok"), "access_granted", "info", False), (("alarm",), "alarm", "high", True),
     ]
 
     async def run(self):
-        async with ApolloClient(self.cfg) as a:
-            await a.connect()
+        async with ApacsClient(self.cfg) as a:
+            await a.login()
+            objs = {o["id"]: o for o in await a.objects()}
             self.connected = True
             self.hub.status(self.sid, "connected")
-            if not a.paths.get("event"):
-                self.hub.status(self.sid, "connected", "No event list on the API - events can be pushed to "
-                                                       f"/modules/integrations/inbound/{self.sid}")
-                await self._stop.wait()
-                return
-            seen: dict[str, None] = {}
-            first = True
+            since = datetime.now(timezone.utc).replace(tzinfo=None)
+            seen: set = set()
+            ticks = 0
             while not self._stop.is_set():
-                r = await a.request("GET", a.paths["event"])
-                r.raise_for_status()
-                for ev in _as_list(r.json()):
-                    key = str(_pick(ev, "id", "Id", "ID", "EventId", "eventId")
-                              or json.dumps(ev, sort_keys=True, default=str))
+                for ev in await a.events_since(since):
+                    key = (ev.get("Date"), (ev.get("Source") or {}).get("Id"), ev.get("Type"), ev.get("Code"))
                     if key in seen:
                         continue
-                    seen[key] = None
-                    if not first:  # do not replay history on start
-                        await self.handle_inbound(ev)
-                first = False
+                    seen.add(key)
+                    t = apacs_utc(ev.get("Date"))
+                    if t:                                 # 1 s overlap: same-second events are de-duplicated
+                        since = max(since, t - timedelta(seconds=1))
+                    await self.apacs_event(ev, objs)
                 if len(seen) > 5000:
-                    seen = dict.fromkeys(list(seen)[-2000:])
+                    seen = set(list(seen)[-1000:])
+                ticks += 1
+                if ticks % 10 == 0:                       # refresh the states of imported devices
+                    for o in await a.objects():
+                        objs[o["id"]] = o
+                        if o["state"] is not None and apacs_kind(o["type"]):
+                            d = self.hub.device(self.sid, apacs_kind(o["type"]), o["id"])
+                            if d:
+                                self.hub.upsert(self.sid, d["kind"], o["id"], None, {"state": o["state"]})
+                    self.hub.save()
                 try:
-                    await asyncio.wait_for(self._stop.wait(), float(self.cfg.get("poll_seconds") or 5))
+                    await asyncio.wait_for(self._stop.wait(), float(self.cfg.get("poll_seconds") or 3))
                 except asyncio.TimeoutError:
                     pass
+
+    async def apacs_event(self, ev: dict, objs: dict):
+        src = ev.get("Source") or {}
+        typ, code = str(ev.get("Type") or ""), str(ev.get("Code") or "")
+        etype, sev, alarm = "event", "info", False
+        for t, words, et, sv, al in self.RULES:
+            if typ.lower() == t and any(w in code.lower() for w in words):
+                etype, sev, alarm = et, sv, al
+                break
+        sid_, kind = str(src.get("Id", "")), apacs_kind(src.get("TypeId", ""))
+        o = objs.get(sid_) or {}
+        if src.get("TypeId", "").lower() == "aspreaderinput" and o.get("parent") in objs:   # door contact -> its door
+            p = objs[o["parent"]]
+            if not self.hub.device(self.sid, "input", sid_):
+                sid_, kind = p["id"], "door"
+        person = ev.get("Person") or {}
+        who = " ".join(str(person.get(k) or "") for k in ("FirstName", "LastName")).strip() if isinstance(person, dict) else ""
+        text = " ".join(x for x in (re.sub(r"(?<!^)(?=[A-Z])", " ", code) or typ, f"- {src.get('Label')}" if src.get("Label") else "") if x)
+        if kind and self.hub.device(self.sid, kind, sid_):
+            self.hub.upsert(self.sid, kind, sid_, None, {"last_event": text})
+            self.hub.save()
+            await self.hub.event(self.sid, kind, sid_, etype, sev, text, alarm=alarm, extra={"user": who} if who else None)
+        elif sev != "info":                               # not imported, but important: report it on the system
+            await self.hub.event(self.sid, "system", 0, etype, sev, text, alarm=alarm, extra={"user": who} if who else None)
 
     async def import_devices(self, csv_text=None, items=None) -> int:
         n = 0
         if items:
             for it in items:
                 kind = it.get("kind") if it.get("kind") in ("door", "input", "output") else "door"
-                self.hub.upsert(self.sid, kind, str(it["id"]), it.get("name"))
+                self.hub.upsert(self.sid, kind, str(it["id"]), it.get("name"),
+                                {"apacs_type": it.get("type", ""), "state": it.get("state", "")})
                 n += 1
             self.hub.save()
             return n
@@ -636,17 +521,14 @@ class ApolloAdapter(Adapter):
         raise ValueError("Choose the doors and I/O to import")
 
     async def action(self, device, action):
-        if action != "unlock" or device["kind"] != "door":
+        if action not in self.actions.get(device["kind"], []):
             raise ValueError(f"'{action}' is not possible on a {device['kind']}")
-        if not self.cfg.get("unlock_path"):
-            raise ValueError("No door unlock path - run Test connection or set it under Advanced in the system settings")
-        async with ApolloClient(self.cfg) as a:
-            await a.connect()
-            r = await a.request("POST", self.cfg["unlock_path"].replace("{door}", str(device["number"])))
-        if r.status_code >= 400:
-            raise ValueError(f"APACS returned HTTP {r.status_code}")
-        await self.hub.event(self.sid, "door", device["number"], "door_unlocked", "info",
-                             "Door unlocked from Ellalon")
+        type_id = (device.get("state") or {}).get("apacs_type") or {"door": "aspreader", "output": "relay", "input": "aspinput"}[device["kind"]]
+        async with ApacsClient(self.cfg) as a:
+            await a.login()
+            await a.command(type_id, device["number"], self.COMMANDS[action])
+        await self.hub.event(self.sid, device["kind"], device["number"], f"{device['kind']}_{action}", "info",
+                             f"{action.capitalize()} from Ellalon")
 
     async def handle_inbound(self, ev: dict):
         door = _pick(ev, "door", "Door", "DoorId", "doorId", "ReaderId", "readerId", "reader", "Reader")
@@ -654,7 +536,7 @@ class ApolloAdapter(Adapter):
                          "message", "Message") or "event")
         low = text.lower()
         etype, sev, alarm = "event", "info", False
-        for words, t, s, a in self.RULES:
+        for words, t, s, a in self.RULES_TEXT:
             if any(w in low for w in words):
                 etype, sev, alarm = t, s, a
                 break

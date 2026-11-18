@@ -1019,11 +1019,16 @@ window.delCam = async (id) => {
 
 // ---------------------------------------------------------------- integrations (3rd-party systems)
 let intTypes = null, intSystems = [], intDevices = [], intEditing = null, linkDevice = null, intTimer = null;
-const ACTION_LABEL = { arm: "Arm", stay: "Stay", disarm: "Disarm", bypass: "Bypass", unbypass: "Unbypass", unlock: "Unlock" };
+const ACTION_LABEL = { arm: "Arm", stay: "Stay", disarm: "Disarm", bypass: "Bypass", unbypass: "Unbypass", unlock: "Unlock",
+  lock: "Lock", pulse: "Pulse", on: "On", off: "Off", onepass: "Open once" };
 const imod = (path, opts) => mod("integrations", path, opts);
 
 function deviceState(d) {
   const s = d.state || {}, tag = (t, cls = "") => `<span class="sev ${cls}">${t}</span>`;
+  if (s.apacs_type !== undefined && s.state) {           // Apollo APACS live state
+    const st = String(s.state), bad = /alarm|forced|fault|offline|tamper/i.test(st), warn = /unlock|held|notready/i.test(st);
+    return tag(esc(st.replace(/([a-z])([A-Z])/g, "$1 $2")), bad ? "critical" : warn ? "warning" : "");
+  }
   if (d.kind === "partition") {
     if (s.triggered) return tag("ALARM", "critical");
     if (s.armed) return tag("Armed", "warning");
@@ -1101,7 +1106,7 @@ function intRenderFields(type, cfg = {}) {
     return `<label>${esc(f.label)}<input name="cfg_${f.key}" type="${f.type || "text"}" value="${esc(v)}" placeholder="${esc(ph)}" ${f.required ? "required" : ""} autocomplete="off"></label>`;
   }).join("");
   $("#intHelp").textContent = type === "apollo"
-    ? "Apollo: needs the APACS API Service running on the APACS server (Start menu → Apollo → Start APACS API Service; APACS 3.7+, licence with web sessions). Default port 8081 with HTTPS. Use an APACS operator login. Click Test connection, then choose the doors and I/O to import."
+    ? "Apollo: needs the APACS API Service running on the APACS server (Start menu → Apollo → Start APACS API Service; licence with web sessions), port 8081. Tick HTTPS only if the service was set up for HTTPS. Use an APACS operator login. Click Test connection, then choose the doors and I/O to import."
     : "RISCO: connects to the panel's IP module on the LAN. On mono-socket IP modules, RISCO Cloud may have to be disabled for a local connection.";
 }
 $("#intAdd").onclick = async () => {
@@ -1171,7 +1176,7 @@ $("#intTest").onclick = async () => {
         if (!rows.length) return "";
         return `<div class="devGroup"><label class="inline devHead"><input type="checkbox" class="devAll" data-kind="${kind}"> <b>${INT_KIND[kind]} (${rows.length})</b></label>
           <div class="devList">${rows.map(([d, i]) => `<label class="inline"><input type="checkbox" class="devSel" data-kind="${kind}" value="${i}" ${d.imported ? "disabled" : ""}>
-            ${esc(d.name)} <span class="muted small">#${esc(d.id)}${d.where ? " · " + esc(d.where) : ""}${d.imported ? " · already imported" : ""}</span></label>`).join("")}</div></div>`;
+            ${esc(d.name)} <span class="muted small">#${esc(d.id)}${d.type ? " · " + esc(d.type) : ""}${d.state ? " · " + esc(d.state) : ""}${d.where ? " · " + esc(d.where) : ""}${d.imported ? " · already imported" : ""}</span></label>`).join("")}</div></div>`;
       }).join("");
       $("#intDevs").innerHTML = groups;
       $("#intDevs").querySelectorAll(".devAll").forEach((a) => (a.onchange = () => {

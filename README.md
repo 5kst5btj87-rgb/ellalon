@@ -174,7 +174,9 @@ the analytics sees. Detector: YOLOX-Tiny (Megvii, Apache-2.0) on CPU, 3 frames/s
 
 ### Apollo APACS: connect, test, choose what to import
 Integrations -> Add system -> Apollo APACS: enter the APACS server IP, port (8081), an APACS operator and password
-(HTTPS by default), click **Test connection**. Ellalon finds the login method and the API endpoints itself (from the
-API description when the server publishes one, otherwise the usual paths), then lists every door, input and output -
-tick what you want and **Save and import**. Endpoint paths can still be set by hand under Advanced.
-Needs the APACS API Service (APACS 3.7+, licence with web sessions).
+(tick HTTPS only if the API Service was set up for HTTPS), click **Test connection**. Ellalon logs in with the APACS API
+protocol (Apacs.Auth / Apacs.Session, as in Apollo's API manual and samples), reads every object with its live state and
+lists the doors (readers), inputs and outputs (relays) - tick what you want and **Save and import**. Live events
+(door forced / held open, access granted / denied, tamper, offline) become Ellalon events and alarms; doors can be
+opened once, unlocked or locked, relays pulsed / switched, inputs armed / disarmed from Ellalon.
+Needs the APACS API Service (licence with web sessions).
