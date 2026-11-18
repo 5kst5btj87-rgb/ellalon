@@ -37,12 +37,32 @@ class Scan:
         self.results: list[dict] = []
         self.cancelled = False
         self.segments = 0
+        self.phase, self.skimmed, self.scenes = "", 0, 0
+
+    def add(self, view: dict, described: list[dict]):
+        """Every person is kept (so the filter can change after the search); `views` = tags per view."""
+        self.people += 1
+        tags = described[0]["tags"]
+        for r in self.results[-8:]:                       # the same person split in two tracks
+            if abs(r["ts"] - view["ts"]) < 6 and set(r["tags"]) == set(tags):
+                return
+        name = f"{len(self.results):04d}.jpg"
+        crop = view["crop"]
+        if crop.shape[0] > 320:
+            crop = cv2.resize(crop, (max(1, int(crop.shape[1] * 320 / crop.shape[0])), 320), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(str(self.folder / name), crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        self.results.append({"ts": round(view["ts"], 1), "tags": tags, "views": [d["tags"] for d in described],
+                             "scores": described[0]["scores"], "image": f"/modules/analytics/scans/{self.id}/{name}"})
+
+    def matches(self, r) -> bool:
+        return not self.tags or any(tags_match(self.tags, set(v)) for v in r.get("views") or [r["tags"]])
 
     def view(self) -> dict:
         return {"id": self.id, "camera_id": self.cam["id"], "camera": self.cam["name"], "start": self.start, "end": self.end,
                 "tags": self.tags, "mode": self.mode, "state": self.state, "error": self.error, "created": self.created,
-                "progress": round(min(1.0, self.done_s / self.total_s), 3), "people": self.people,
-                "segments": self.segments, "results": self.results}
+                "progress": round(min(1.0, self.done_s / self.total_s), 3), "people": len(self.results),
+                "matches": sum(1 for r in self.results if self.matches(r)), "phase": self.phase,
+                "skimmed": self.skimmed, "scenes": self.scenes, "segments": self.segments, "results": self.results}
 
 
 # ---------------------------------------------------------------- where the recordings are
@@ -92,13 +112,14 @@ def download(seg: dict, dest: Path):
 
 
 # ---------------------------------------------------------------- decoding
-def frames(path: Path, offset: float, duration: float, mode: str, stop):
-    """Yields (seconds from `offset`, BGR frame) using ffmpeg; key frames only in fast mode."""
+def frames(path: Path, offset: float, duration: float, rate, stop):
+    """Yields (seconds from `offset`, BGR frame) using ffmpeg. rate="key": key frames only (very fast,
+    nothing else is decoded); a number: that many frames per second."""
     cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "info"]
-    if mode == "fast":
+    if rate == "key":
         cmd += ["-skip_frame", "nokey"]
-    cmd += ["-ss", f"{max(0.0, offset):.2f}", "-i", str(path), "-t", f"{max(1.0, duration):.2f}", "-an", "-sn"]
-    vf = ("fps=1," if mode != "fast" else "") + "showinfo"
+    cmd += ["-ss", f"{max(0.0, offset):.2f}", "-i", str(path), "-t", f"{max(0.5, duration):.2f}", "-an", "-sn"]
+    vf = (f"fps={rate}," if rate != "key" else "") + "showinfo"
     cmd += ["-vf", vf, "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     infos: queue.Queue = queue.Queue()
@@ -131,10 +152,78 @@ def frames(path: Path, offset: float, duration: float, mode: str, stop):
 
 
 # ---------------------------------------------------------------- the scan
+class People:
+    """Tracks people through a run of frames and keeps the best views of each one for tagging."""
+
+    def __init__(self, scan: Scan, tagger, regions, max_age: float, views: int):
+        self.scan, self.tagger, self.regions, self.views = scan, tagger, regions, views
+        self.tracker = Tracker(max_age=max_age)
+        self.cand: dict[int, list[dict]] = {}
+        self.last: dict[int, float] = {}
+
+    def frame(self, frame, dets, now):
+        h, w = frame.shape[:2]
+        for t in self.tracker.update(dets, now):
+            self.last[t.id] = now
+            x1, y1, x2, y2 = t.box
+            if y2 - y1 < self.scan.min_height or y1 <= 2 or y2 >= h - 2:
+                continue
+            area = (x2 - x1) * (y2 - y1)
+            c = self.cand.setdefault(t.id, [])
+            if len(c) >= 4 and area <= min(v["area"] for v in c):
+                continue
+            fx1, fy1, fx2, fy2 = self.regions(t.box, w, h)["full"]
+            crop = frame[fy1:fy2, fx1:fx2].copy()
+            c.append({"area": area, "ts": now, "crop": crop, "box": (x1 - fx1, y1 - fy1, x2 - fx1, y2 - fy1)})
+            c.sort(key=lambda v: -v["area"])
+            del c[4:]
+        for tid in [k for k, v in self.last.items() if now - v > self.tracker.max_age]:
+            self.finish(tid)
+
+    def finish(self, tid):
+        views = self.cand.pop(tid, [])
+        self.last.pop(tid, None)
+        if not views:
+            return
+        pick = [views[0]]                                  # biggest view, plus others a moment apart
+        for v in views[1:]:
+            if len(pick) >= self.views:
+                break
+            if all(abs(v["ts"] - p["ts"]) >= 1.0 for p in pick):
+                pick.append(v)
+        described = [self.tagger.describe(v["crop"], v["box"]) for v in pick]
+        self.scan.add(pick[0], described)
+
+    def close(self):
+        for tid in list(self.cand):
+            self.finish(tid)
+        self.last.clear()
+
+
+def windows(hits: list[float], keys: list[float], start: float, end: float) -> list[tuple[float, float]]:
+    """Scenes to look at closely: from the key frame before each hit to the key frame after it."""
+    out = []
+    for h in hits:
+        prev = max([k for k in keys if k < h - 0.01], default=h - 3)
+        nxt = min([k for k in keys if k > h + 0.01], default=h + 3)
+        prev, nxt = max(prev, h - 6), min(nxt, h + 6)        # very long key-frame gaps: stay near the hit
+        a, b = max(start, min(prev, h - 1)), min(end, max(nxt, h + 1))
+        if out and a <= out[-1][1] + 0.5:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
 def run_scan(scan: Scan, detector, tagger, regions, core_url: str, token: str, log):
+    """fast:     1) skim the key frames for people (no tagging), 2) go back to each scene with people
+                 and look at it closely (2 frames/s): track, tag the best view of each person.
+       accurate: 3 frames/s through the whole time, each person tagged from two different views."""
     scan.state = "running"
     tmp = scan.folder / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
+    stop = lambda: scan.cancelled
+    people_dets = lambda frame, conf: [d for d in detector.detect(frame, conf) if d["cls"] == "person"]
     try:
         if detector is None:
             raise RuntimeError("the people detector is not available in the analytics app")
@@ -144,33 +233,11 @@ def run_scan(scan: Scan, detector, tagger, regions, core_url: str, token: str, l
         scan.segments = len(segs)
         if not segs:
             raise RuntimeError("no recordings of this camera in that time")
-        tracker, step = Tracker(max_age=6.0 if scan.mode == "fast" else 3.0), 0
-        best: dict[int, dict] = {}                       # track id -> best view so far
-        last_seen: dict[int, float] = {}
-
-        def finish(tid):
-            b = best.pop(tid, None)
-            last_seen.pop(tid, None)
-            if not b:
-                return
-            scan.people += 1
-            res = tagger.describe(b["crop"], b["box"])
-            if scan.tags and not tags_match(scan.tags, set(res["tags"])):
-                return
-            for r in scan.results[-6:]:                  # the same person split in two tracks
-                if abs(r["ts"] - b["ts"]) < 8 and set(r["tags"]) == set(res["tags"]):
-                    return
-            name = f"{len(scan.results):04d}.jpg"
-            cv2.imwrite(str(scan.folder / name), b["thumb"], [cv2.IMWRITE_JPEG_QUALITY, 85])
-            scan.results.append({"ts": round(b["ts"], 1), "tags": res["tags"], "scores": res["scores"],
-                                 "image": f"/modules/analytics/scans/{scan.id}/{name}"})
-
-        covered = scan.start
         for seg in segs:
             if scan.cancelled:
                 break
-            a, b_ = max(scan.start, seg["t"]), min(scan.end, seg["until"])
-            if b_ <= a:
+            a, b = max(scan.start, seg["t"]), min(scan.end, seg["until"])
+            if b <= a:
                 continue
             f = tmp / "seg.mp4"
             try:
@@ -178,39 +245,44 @@ def run_scan(scan: Scan, detector, tagger, regions, core_url: str, token: str, l
             except Exception as e:
                 log.warning("scan %s: cannot fetch %s: %s", scan.id, seg["url"], e)
                 continue
-            base = a
-            for pts, frame in frames(f, a - seg["t"], b_ - a, scan.mode, lambda: scan.cancelled):
-                now = base + pts
-                scan.done_s = max(scan.done_s, now - scan.start)
-                dets = [d for d in detector.detect(frame, 0.4) if d["cls"] == "person"]
-                tracks = tracker.update(dets, now)
-                h, w = frame.shape[:2]
-                for t in tracks:
-                    x1, y1, x2, y2 = t.box
-                    last_seen[t.id] = now
-                    if y2 - y1 < scan.min_height or y1 <= 2 or y2 >= h - 2:
-                        continue
-                    area = (x2 - x1) * (y2 - y1)
-                    if t.id in best and area <= best[t.id]["area"]:
-                        continue
-                    fx1, fy1, fx2, fy2 = regions(t.box, w, h)["full"]
-                    crop = frame[fy1:fy2, fx1:fx2].copy()
-                    thumb = crop if crop.shape[0] <= 320 else cv2.resize(crop, (max(1, int(crop.shape[1] * 320 / crop.shape[0])), 320))
-                    best[t.id] = {"area": area, "ts": now, "crop": crop, "thumb": thumb,
-                                  "box": (x1 - fx1, y1 - fy1, x2 - fx1, y2 - fy1)}
-                for tid in [k for k, v in last_seen.items() if now - v > tracker.max_age]:
-                    finish(tid)
-                step += 1
+            off = seg["t"]
+            if scan.mode == "fast":
+                keys, hits = [], []
+                scan.phase = "skimming"
+                for pts, frame in frames(f, a - off, b - a, "key", stop):
+                    now = a + pts
+                    keys.append(now)
+                    scan.done_s = max(scan.done_s, now - scan.start)
+                    small = max(30, scan.min_height * 0.6)
+                    if any(d["box"][3] - d["box"][1] >= small for d in people_dets(frame, 0.35)):
+                        hits.append(now)
+                scan.skimmed += len(keys)
+                scan.phase = "looking closer"
+                for wa, wb in windows(hits, keys, a, b):
+                    if scan.cancelled:
+                        break
+                    scan.scenes += 1
+                    ppl = People(scan, tagger, regions, max_age=2.0, views=1)
+                    for pts, frame in frames(f, wa - off, wb - wa, 2, stop):
+                        ppl.frame(frame, people_dets(frame, 0.4), wa + pts)
+                    ppl.close()
+            else:
+                scan.phase = "analysing"
+                ppl = People(scan, tagger, regions, max_age=2.0, views=2)
+                for pts, frame in frames(f, a - off, b - a, 3, stop):
+                    now = a + pts
+                    scan.done_s = max(scan.done_s, now - scan.start)
+                    ppl.frame(frame, people_dets(frame, 0.35), now)
+                ppl.close()
             f.unlink(missing_ok=True)
-            covered = b_
-            scan.done_s = max(scan.done_s, covered - scan.start)
-        for tid in list(best):
-            finish(tid)
+            scan.done_s = max(scan.done_s, b - scan.start)
         scan.results.sort(key=lambda r: r["ts"])
-        scan.done_s = scan.total_s if not scan.cancelled else scan.done_s
+        if not scan.cancelled:
+            scan.done_s = scan.total_s
         scan.state = "cancelled" if scan.cancelled else "done"
     except Exception as e:
         scan.state, scan.error = "error", str(e)[:300]
         log.warning("scan %s failed: %s", scan.id, e)
     finally:
+        scan.phase = ""
         shutil.rmtree(tmp, ignore_errors=True)

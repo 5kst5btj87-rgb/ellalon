@@ -39,7 +39,7 @@ SIGHT_DIR = Path(os.environ.get("ANALYTICS_SIGHTINGS", "/data/sightings"))
 SIGHT_DAYS = float(os.environ.get("ANALYTICS_SIGHTING_DAYS", "30"))
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
-m = EllalonModule(version="0.4.0")
+m = EllalonModule(version="0.5.0")
 app = m.app
 workers: dict[int, "Worker"] = {}
 loop: asyncio.AbstractEventLoop | None = None
@@ -429,7 +429,7 @@ class ScanIn(BaseModel):
     start: float
     end: float
     tags: list[str] = []
-    mode: str = "fast"                     # fast (key frames) | thorough (1 frame per second)
+    mode: str = "fast"                     # fast (skim key frames, then look closely at scenes with people) | accurate
     min_height: int = Field(70, ge=30, le=400)
 
 
@@ -447,7 +447,7 @@ async def start_scan(body: ScanIn):
         raise HTTPException(404, "No such camera")
     tags = [t for t in body.tags if re.fullmatch(r"[a-z_]+:[a-z_]+", t)][:12]
     s = sc.Scan(SCAN_DIR, cam, body.start, min(body.end, time.time()), tags,
-                "thorough" if body.mode == "thorough" else "fast", body.min_height)
+                "accurate" if body.mode in ("accurate", "thorough") else "fast", body.min_height)
     s.folder.mkdir(parents=True, exist_ok=True)
     scans[s.id] = s
     forget_old_scans()
@@ -457,7 +457,7 @@ async def start_scan(body: ScanIn):
 
 @app.get("/scans")
 async def list_scans():
-    return [{**s.view(), "results": len(s.results)} for s in sorted(scans.values(), key=lambda x: -x.created)]
+    return [{**s.view(), "results": len(s.results)} for s in sorted(scans.values(), key=lambda x: -x.created)]   # results = people found
 
 
 @app.get("/scans/{sid}")
