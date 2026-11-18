@@ -113,6 +113,56 @@
       <div id="ruleList" class="rules"></div>
     </div>
 
+    <div id="tab-maps" class="tab hidden">
+      <div class="maps">
+        <aside class="mapside">
+          <div class="card mapcard">
+            <div class="maphead"><b>Maps</b><button id="mapNew" class="small">+ New map</button></div>
+            <div id="mapList" class="maplist"></div>
+          </div>
+          <div id="mapPalette" class="card mapcard hidden">
+            <div class="maphead"><b>Add to the map</b></div>
+            <p class="muted small">Drag onto the map. Then drag to move, click to edit.</p>
+            <input id="mapSearch" placeholder="Search…">
+            <div id="mapPalList" class="mappal"></div>
+          </div>
+          <div class="card mapcard"><div class="maphead"><b>Legend</b></div><div id="mapLegend" class="maplegend"></div></div>
+        </aside>
+        <section class="mapmain">
+          <div class="toolbar maptools">
+            <button id="mapBack" class="ghost small hidden">◀ Back</button>
+            <b id="mapTitle" class="maptitle">No map</b>
+            <span id="mapSummary" class="small muted"></span>
+            <span class="grow"></span>
+            <button id="mapZoomOut" class="ghost small" title="Zoom out">−</button>
+            <button id="mapFit" class="ghost small" title="Fit to screen">Fit</button>
+            <button id="mapZoomIn" class="ghost small" title="Zoom in">+</button>
+            <span id="mapAdmin" class="hidden">
+              <button id="mapEdit" class="small">✎ Edit map</button>
+              <span id="mapEditTools" class="hidden">
+                <button id="mapUpload" class="ghost small">Upload floor plan…</button>
+                <button id="mapRename" class="ghost small">Rename</button>
+                <button id="mapDelete" class="danger small">Delete map</button>
+              </span>
+            </span>
+            <input type="file" id="mapFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" class="hidden">
+          </div>
+          <div class="mapwrap">
+            <div id="mapView" class="mapview">
+              <div id="mapStage" class="mapstage">
+                <img id="mapImg" alt="" draggable="false">
+                <svg id="mapCones" class="mapcones"></svg>
+                <div id="mapItems" class="mapitems"></div>
+              </div>
+            </div>
+            <div id="mapEmpty" class="mapempty hidden"></div>
+            <div id="mapPop" class="mappop hidden"></div>
+            <div id="mapProps" class="mapprops hidden"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
     <div id="tab-faces" class="tab hidden">
       <div class="toolbar"><button id="faceAdd">+ Add person</button> <span id="faceStatus" class="small"></span>
         <button id="faceStart" class="hidden">Start face recognition</button></div>
@@ -442,5 +492,6 @@
   <button type="button" class="ghost" id="pwCancel">Cancel</button> <button>Save</button>
 </form></dialog>
 <script src="app.js"></script>
+<script src="maps.js"></script>
 </body>
 </html>

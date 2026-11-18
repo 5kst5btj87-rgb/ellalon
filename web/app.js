@@ -76,6 +76,8 @@ const APPS = [
   { id: "playback", name: "Playback", desc: "Recordings by camera and time", icon: I('<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/>'), color: "#ff8a3d" },
   { id: "cameras", name: "Cameras", desc: "Add, discover, analytics, events", icon: I('<rect x="3" y="7" width="13" height="10" rx="2"/><path d="m16 11 5-3v8l-5-3"/>'), color: "#34c77b",
     stat: () => cameras.length ? `${cameras.filter((c) => c.status?.state === "online").length} of ${cameras.length} online` : "" },
+  { id: "maps", name: "Maps", desc: "Floor plans with live status", icon: I('<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>'), color: "#4cc38a",
+    stat: () => typeof mapStat === "function" ? mapStat() : "" },
   { id: "rules", name: "Rules", desc: "When … only if … then …", icon: I('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="12" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M8.5 6H13v12H8.5M13 12h2.5"/>'), color: "#21c7c7" },
   { id: "faces", name: "Faces", desc: "Watch list and face matches", icon: I('<circle cx="12" cy="10" r="4"/><path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5"/>'), color: "#e46fd2" },
   { id: "integrations", name: "Integrations", desc: "Apollo, RISCO and more", icon: I('<path d="M9 4v5M15 4v5M7 9h10v3a5 5 0 0 1-10 0z"/><path d="M12 17v4"/>'), color: "#c9a227" },
@@ -98,7 +100,7 @@ function show(tab) {
   $("#homeBtn").classList.toggle("active", tab === "home");
   renderTabs();
   if (tab === "home") renderHome();
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 function renderTabs() {
   const pins = pinned();
@@ -152,6 +154,7 @@ function connectWs() {
     if (["high", "critical"].includes(data.severity)) flashCamera(data.camera_id);
     if (data.type.startsWith("camera.") && !$("#tab-cameras").classList.contains("hidden")) loadCameras();
     if (data.source === "integrations" && !$("#tab-integrations").classList.contains("hidden")) refreshIntegrationsSoon();
+    if (typeof mapOnEvent === "function") mapOnEvent(data);
     if (data.type === "rule.notify") { alarmToast({ ...data, payload: { title: `${data.payload?.title || ""}${data.payload?.text && data.payload.text !== data.payload.title ? " - " + data.payload.text : ""}` } }, "Rule"); alarmBeep(); }
     if (data.type.startsWith("incident.")) {
       if (!$("#tab-incidents").classList.contains("hidden")) loadIncidents(); else refreshAlarmBadge();

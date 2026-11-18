@@ -30,6 +30,7 @@ from .db import Camera, Event, ModuleState, SessionLocal, User, init_db
 from .docker_manager import DockerManager, cname
 from .registry import registry
 from .recorders import recorder_monitor, router as recorders_router
+from .maps import router as maps_router
 from . import storage as storage_mod
 from .storage import ensure_default as ensure_default_storage, load_storages
 
@@ -347,6 +348,7 @@ def reload_manifests(_=Depends(require("admin"))):
 app.include_router(cameras_router)
 app.include_router(storage_mod.router)
 app.include_router(recorders_router)
+app.include_router(maps_router)
 
 
 # ---------------------------------------------------------------- events & C&C
