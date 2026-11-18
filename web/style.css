@@ -139,3 +139,10 @@ dialog.ask{width:min(460px,92vw)}
 #askInput{width:100%;box-sizing:border-box;margin-bottom:10px}
 #askDialog .row{display:flex;justify-content:flex-end;gap:8px}
 .warn{color:var(--warn)}
+
+/* integrations device picker: one readable line per item */
+#intDialog{width:min(1100px,96vw)}
+.devList{grid-template-columns:repeat(auto-fill,minmax(460px,1fr));max-height:340px}
+.devList label.inline{display:grid;grid-template-columns:auto 1fr;gap:2px 8px;align-items:start;padding:4px 0;border-bottom:1px solid #ffffff0d;white-space:normal}
+.devList label.inline input{grid-row:1 / span 2;margin-top:3px}
+.devList label.inline .small{grid-column:2}

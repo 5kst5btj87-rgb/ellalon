@@ -328,25 +328,35 @@ class ApacsClient:
             return r.text
 
     async def objects(self) -> list[dict]:
-        """Every object with its live state: [{id, label, parent, type, state}]."""
-        data = None
-        for path, params in (("objectstate/all", None), ("objectstate", {"filter": json.dumps({"Start": 0, "Count": 20000})})):
+        """Every object: names from the configuration tree (current database), live state from objectstate."""
+        big = {"filter": json.dumps({"Start": 0, "Count": 20000})}
+
+        def rows(data):
+            recs = data.get("Records", data) if isinstance(data, dict) else (data or [])
+            return recs if isinstance(recs, list) else []
+        states, tree = {}, {}
+        for path, params in (("objectstate/all", None), ("objectstate", big)):
             try:
-                data = await self.get(path, params)
+                for r in rows(await self.get(path, params)):
+                    src = r.get("Source") if isinstance(r, dict) and isinstance(r.get("Source"), dict) else None
+                    if src and src.get("Id") is not None:
+                        states[str(src["Id"])] = (src, r.get("State"))
                 break
             except ValueError:
                 continue
-        if data is None:                                  # fall back to the configuration tree (no states)
-            data = await self.get("treeobject", {"filter": json.dumps({"Start": 0, "Count": 20000})})
-        recs = data.get("Records", data) if isinstance(data, dict) else (data or [])
+        try:
+            for t in rows(await self.get("treeobject", big)):
+                if isinstance(t, dict) and t.get("Id") is not None:
+                    tree[str(t["Id"])] = t
+        except ValueError:
+            pass                                          # older API: names from objectstate only
         out = []
-        for r in recs if isinstance(recs, list) else []:
-            src = r.get("Source") if isinstance(r, dict) and isinstance(r.get("Source"), dict) else r
-            if not isinstance(src, dict) or src.get("Id") is None:
-                continue
-            out.append({"id": str(src["Id"]), "label": src.get("Label") or str(src["Id"]), "parent": str(src.get("ParentId") or ""),
-                        "type": src.get("TypeId") or "", "state": r.get("State") if src is not r else None,
-                        "active": src.get("IsActive", True)})
+        for oid in dict.fromkeys(list(tree) + list(states)):
+            t, (src, state) = tree.get(oid), states.get(oid, (None, None))
+            o = t or src
+            out.append({"id": oid, "label": (t or {}).get("Label") or (src or {}).get("Label") or oid,
+                        "parent": str(o.get("ParentId") or ""), "type": o.get("TypeId") or (src or {}).get("TypeId") or "",
+                        "state": state, "active": o.get("IsActive", True)})
         return out
 
     async def events_since(self, since: datetime) -> list[dict]:
