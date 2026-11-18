@@ -1295,7 +1295,8 @@ window.delCam = async (id) => {
 // ---------------------------------------------------------------- integrations (3rd-party systems)
 let intTypes = null, intSystems = [], intDevices = [], intEditing = null, linkDevice = null, intTimer = null;
 const ACTION_LABEL = { arm: "Arm", stay: "Stay", disarm: "Disarm", bypass: "Bypass", unbypass: "Unbypass", unlock: "Unlock",
-  lock: "Lock", pulse: "Pulse", on: "On", off: "Off", onepass: "Open once" };
+  lock: "Lock", pulse: "Pulse", on: "On", off: "Off", onepass: "Open once",
+  mode_card: "Mode: card only", mode_cardorpin: "Mode: card or PIN", mode_cardandpin: "Mode: card + PIN", mode_normal: "Mode: normal (as configured)" };
 const imod = (path, opts) => mod("integrations", path, opts);
 
 function deviceState(d) {
@@ -1352,7 +1353,9 @@ function renderIntDevices() {
     const id = encodeURIComponent(d.id);
     return `<tr><td>${esc(sysName(d.system_id))}</td><td>${esc(d.kind)}</td><td>${esc(d.number)}</td><td>${esc(d.name)}</td><td>${deviceState(d)}</td>
       <td>${d.cameras.map((c) => esc(camName(c))).join(", ") || '<span class="muted">–</span>'} <a class="link" onclick="intLink('${id}')">link</a></td>
-      <td>${acts.map((a) => `<button class="${a === "disarm" || a === "unlock" ? "" : "ghost"}" onclick="intAct('${id}','${a}')">${ACTION_LABEL[a] || a}</button>`).join(" ")}</td></tr>`;
+      <td>${acts.filter((a) => !a.startsWith("mode_")).map((a) => `<button class="${a === "disarm" || a === "unlock" ? "" : "ghost"}" onclick="intAct('${id}','${a}')">${ACTION_LABEL[a] || a}</button>`).join(" ")}
+        ${acts.some((a) => a.startsWith("mode_")) ? `<select class="modesel" title="Door mode" onchange="if(this.value){intAct('${id}',this.value);this.value=''}">
+          <option value="">Door mode…</option>${acts.filter((a) => a.startsWith("mode_")).map((a) => `<option value="${a}">${ACTION_LABEL[a].replace("Mode: ", "")}</option>`).join("")}</select>` : ""}</td></tr>`;
   }).join("") || `<tr><td colspan=7 class="muted">No devices yet - add a system and click “Import devices”.</td></tr>`;
 }
 $("#intFilter").onchange = renderIntDevices;
