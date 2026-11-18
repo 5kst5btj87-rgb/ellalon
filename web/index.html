@@ -113,6 +113,29 @@
       <div id="ruleList" class="rules"></div>
     </div>
 
+    <div id="tab-analytics" class="tab hidden">
+      <div class="ansearch">
+        <aside class="anfilters">
+          <div class="card mapcard">
+            <div class="maphead"><b>Find people</b><button id="asClear" class="ghost small">Clear</button></div>
+            <label class="small">Cameras<select id="asCam"><option value="">All cameras</option></select></label>
+            <label class="small">When<select id="asWhen">
+              <option value="3600">Last hour</option><option value="today">Today</option><option value="86400" selected>Last 24 hours</option>
+              <option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option><option value="custom">From… to…</option></select></label>
+            <div id="asCustom" class="fgrid2 hidden"><label class="small">From<input type="datetime-local" id="asFrom"></label><label class="small">To<input type="datetime-local" id="asTo"></label></div>
+            <p class="muted small">Tags: choose what the person looks like. Every group you use must match; two choices in one group mean either.</p>
+            <div id="asTags" class="tagpick"></div>
+          </div>
+        </aside>
+        <section class="anresults">
+          <div class="toolbar"><b id="asCount"></b><span id="asState" class="small muted"></span><span class="grow"></span>
+            <button id="asCams" class="ghost small">Tagging per camera…</button><button id="asReload" class="ghost small">↻ Refresh</button></div>
+          <div id="asGrid" class="sightings"></div>
+          <div class="row" style="justify-content:center"><button id="asMore" class="ghost hidden">Load more</button></div>
+        </section>
+      </div>
+    </div>
+
     <div id="tab-maps" class="tab hidden">
       <div class="maps">
         <aside class="mapside">
@@ -394,6 +417,8 @@
   <h3 id="anTitle">Analytics</h3>
   <div class="row anTop"><label class="inline"><input type="checkbox" id="anOn"> Analytics on for this camera</label>
     <span id="anStatus" class="small"></span> <button type="button" id="anStart" class="hidden">Start the analytics app</button></div>
+  <div class="row anTop"><label class="inline"><input type="checkbox" id="anTag"> Tag people (man/woman, clothes, colours, bags, hats, glasses…) for search in the Analytics tab</label>
+    <label class="inline small" title="Sharper picture: better tags, more CPU"><input type="checkbox" id="anTagMain" checked> use the main stream</label></div>
   <div class="anGrid">
     <div>
       <div class="anStage" id="anStage"><img id="anImg" alt=""><canvas id="anCanvas"></canvas><span id="anNoImg" class="muted small hidden">No picture from the camera</span></div>
@@ -407,9 +432,10 @@
       <div id="anEdit" class="anEdit hidden">
         <div class="fgrid2">
           <label>Name<input id="arName" maxlength="60"></label>
-          <label>Rule<select id="arType"><option value="intrusion">Intrusion - object enters a zone</option><option value="line">Line crossing</option><option value="loitering">Loitering - stays in a zone</option><option value="motion">Motion in an area</option></select></label>
+          <label>Rule<select id="arType"><option value="intrusion">Intrusion - object enters a zone</option><option value="line">Line crossing</option><option value="loitering">Loitering - stays in a zone</option><option value="motion">Motion in an area</option><option value="appearance">Person looks like… (tags)</option></select></label>
         </div>
         <div class="arObj"><b class="small">Objects</b><div class="checks" id="arClasses"></div></div>
+        <div class="arTags hidden"><b class="small">Alarm when a person has all of these (two choices in one group = either)</b><div id="arTagPick" class="tagpick"></div></div>
         <div class="fgrid2">
           <label class="arObj">Minimum certainty (%)<input id="arConf" type="number" min="20" max="95" value="50"></label>
           <label class="arLoiter">Seconds in the zone<input id="arSecs" type="number" min="1" value="10"></label>
@@ -468,6 +494,22 @@
   <button type="button" class="ghost" data-close>Cancel</button> <button id="ruleSave">Save rule</button>
 </form></dialog>
 
+<dialog id="asCamDialog"><form method="dialog">
+  <h3>People tagging per camera</h3>
+  <p class="muted small">Tagged cameras describe every person they see (man/woman, hair, hat, glasses, clothes, shoes, bag and colours) for the search in this tab.
+    Each tagged camera uses extra CPU; “main stream” gives sharper pictures and better tags but uses more.</p>
+  <table><thead><tr><th>Camera</th><th>Tag people</th><th>Main stream</th><th>Smallest person (px)</th></tr></thead><tbody id="asCamRows"></tbody></table>
+  <p id="asCamMsg" class="small"></p>
+  <button class="ghost">Close</button>
+</form></dialog>
+
+<dialog id="asView" class="wide"><form method="dialog">
+  <div class="asview"><img id="asViewImg" alt=""><div><h3 id="asViewTitle"></h3><div id="asViewTags" class="tagcloud"></div>
+    <p class="muted small">Tags are estimates from the picture; check the recording.</p>
+    <div class="row"><button type="button" id="asViewPb" class="ghost">Open playback</button> <button type="button" id="asViewSame" class="ghost">Find similar (same tags)</button></div></div></div>
+  <button class="ghost">Close</button>
+</form></dialog>
+
 <dialog id="faceDialog"><form id="faceForm">
   <h3>Add person to the watch list</h3>
   <div class="fgrid">
@@ -493,5 +535,6 @@
 </form></dialog>
 <script src="app.js"></script>
 <script src="maps.js"></script>
+<script src="analytics.js"></script>
 </body>
 </html>

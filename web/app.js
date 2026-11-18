@@ -76,6 +76,7 @@ const APPS = [
   { id: "playback", name: "Playback", desc: "Recordings by camera and time", icon: I('<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/>'), color: "#ff8a3d" },
   { id: "cameras", name: "Cameras", desc: "Add, discover, analytics, events", icon: I('<rect x="3" y="7" width="13" height="10" rx="2"/><path d="m16 11 5-3v8l-5-3"/>'), color: "#34c77b",
     stat: () => cameras.length ? `${cameras.filter((c) => c.status?.state === "online").length} of ${cameras.length} online` : "" },
+  { id: "analytics", name: "Analytics", desc: "Find people by clothes, colours, bags…", icon: I('<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5.5 5.5"/><circle cx="10.5" cy="8.5" r="1.8"/><path d="M7.5 13.5c.8-1.5 1.8-2 3-2s2.2.5 3 2"/>'), color: "#ff7a59" },
   { id: "maps", name: "Maps", desc: "Floor plans with live status", icon: I('<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>'), color: "#4cc38a",
     stat: () => typeof mapStat === "function" ? mapStat() : "" },
   { id: "rules", name: "Rules", desc: "When … only if … then …", icon: I('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="12" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M8.5 6H13v12H8.5M13 12h2.5"/>'), color: "#21c7c7" },
@@ -100,7 +101,7 @@ function show(tab) {
   $("#homeBtn").classList.toggle("active", tab === "home");
   renderTabs();
   if (tab === "home") renderHome();
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, analytics: loadAnalytics, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 function renderTabs() {
   const pins = pinned();
@@ -1053,7 +1054,30 @@ async function loadCameras() {
 const AN_CLASSES = [["person", "People"], ["car", "Cars"], ["truck", "Trucks"], ["bus", "Buses"], ["motorcycle", "Motorcycles"],
   ["bicycle", "Bicycles"], ["dog", "Dogs"], ["cat", "Cats"], ["backpack", "Bags (backpack)"], ["suitcase", "Suitcases"]];
 const AN_COLORS = ["#ffc850", "#3ca0ff", "#78dc78", "#e678e6", "#ff5a5a", "#50dcff"];
-const AN_TYPE = { intrusion: "Intrusion", line: "Line crossing", loitering: "Loitering", motion: "Motion" };
+const AN_TYPE = { intrusion: "Intrusion", line: "Line crossing", loitering: "Loitering", motion: "Motion", appearance: "Person looks like" };
+// appearance tags (analytics module): taxonomy loaded once; chips picker shared by the editor and the Analytics tab
+let anTax = null;
+async function loadTax() {
+  if (anTax) return anTax;
+  try { anTax = (await mod("analytics", "/tags")).groups; } catch { anTax = null; }
+  return anTax;
+}
+const SWATCH = { black: "#111", white: "#f4f4f4", gray: "#8a8f98", red: "#e5383b", orange: "#f48c06", yellow: "#ffd60a", green: "#2fbf71",
+  blue: "#2f7cf6", purple: "#8e5cf7", pink: "#ff70a6", brown: "#8b5a2b", beige: "#d8c3a5", blonde: "#e9cf7a" };
+function tagLabelOf(tag) {
+  for (const g of anTax || []) { const o = g.options.find((x) => x.tag === tag); if (o) return g.colour ? `${o.label} ${g.noun || g.label.replace(/ colour$/i, "").toLowerCase()}` : o.label; }
+  return tag;
+}
+function tagPicker(box, selected, onchange) {
+  if (!anTax) { box.innerHTML = `<p class="muted small">Start the analytics app to choose tags.</p>`; return; }
+  box.innerHTML = anTax.map((g) => `<div class="tgroup"><span class="tglabel">${esc(g.label)}</span>${g.options.map((o) => {
+    const v = o.tag.split(":")[1], sw = g.colour || g.id === "hair_color" ? `<i style="background:${SWATCH[v] || "#777"}"></i>` : "";
+    return `<button type="button" class="chip ${selected.has(o.tag) ? "on" : ""}" data-t="${o.tag}">${sw}${esc(o.label)}</button>`; }).join("")}</div>`).join("");
+  box.querySelectorAll(".chip").forEach((c) => (c.onclick = () => {
+    selected.has(c.dataset.t) ? selected.delete(c.dataset.t) : selected.add(c.dataset.t);
+    c.classList.toggle("on"); onchange && onchange();
+  }));
+}
 let anCam = null, anRules = [], anSel = null, anDrawing = false, anLiveTimer = null;
 $("#arClasses").innerHTML = AN_CLASSES.map(([v, l]) => `<label><input type="checkbox" value="${v}"> ${l}</label>`).join("");
 const anRule = () => anRules.find((r) => r.id === anSel);
@@ -1062,6 +1086,8 @@ window.anOpen = async (cid) => {
   anCam = cameras.find((c) => c.id === cid); if (!anCam) return;
   anRules = JSON.parse(JSON.stringify(anCam.analytics_rules || [])); anSel = null; anDrawing = false;
   $("#anTitle").textContent = `Analytics - ${anCam.name}`; $("#anOn").checked = !!anCam.analytics || !anRules.length;
+  const tgs = anCam.analytics_tagging || {}; $("#anTag").checked = !!tgs.enabled; $("#anTagMain").checked = tgs.main_stream !== false;
+  loadTax();
   $("#anMsg").textContent = ""; $("#anLive").checked = false; $("#anEdit").classList.add("hidden");
   $("#anDialog").showModal(); anPicture(); anModuleStatus(); anList(); anDraw();
 };
@@ -1109,7 +1135,7 @@ $("#anLive").onchange = () => {
 function anList() {
   $("#anRules").innerHTML = anRules.map((r, i) => `<div class="anRule ${r.id === anSel ? "sel" : ""}" onclick="anPick('${r.id}')">
       <span class="sw" style="background:${AN_COLORS[i % AN_COLORS.length]}"></span>
-      <span class="grow"><b>${esc(r.name || AN_TYPE[r.type])}</b><br><span class="muted small">${AN_TYPE[r.type]}${r.type !== "motion" ? " · " + esc(r.classes.join(", ")) : ""}${r.alarm ? " · alarm " + r.severity : " · events only"}${r.enabled ? "" : " · off"}</span></span>
+      <span class="grow"><b>${esc(r.name || AN_TYPE[r.type])}</b><br><span class="muted small">${AN_TYPE[r.type]}${r.type === "appearance" ? " · " + esc((r.tags || []).map(tagLabelOf).join(", ") || "no tags yet") : r.type !== "motion" ? " · " + esc(r.classes.join(", ")) : ""}${r.alarm ? " · alarm " + r.severity : " · events only"}${r.enabled ? "" : " · off"}</span></span>
       <button type="button" class="ghost small" onclick="event.stopPropagation(); anDel('${r.id}')" title="Delete rule">×</button></div>`).join("")
     || `<p class="muted small">No rules yet: the camera only reports motion anywhere in the picture. Add a rule to watch for people or vehicles in a zone or crossing a line.</p>`;
 }
@@ -1130,7 +1156,9 @@ function anFill() {
 }
 function anTypeUi() {
   const r = anRule(); if (!r) return; const t = r.type;
-  document.querySelectorAll("#anEdit .arObj").forEach((e) => e.classList.toggle("hidden", t === "motion"));
+  document.querySelectorAll("#anEdit .arObj").forEach((e) => e.classList.toggle("hidden", t === "motion" || t === "appearance"));
+  $("#anEdit .arTags").classList.toggle("hidden", t !== "appearance");
+  if (t === "appearance") { r.tags = r.tags || []; const sel = new Set(r.tags); loadTax().then(() => tagPicker($("#arTagPick"), sel, () => { r.tags = [...sel]; anList(); })); }
   document.querySelectorAll("#anEdit .arLoiter").forEach((e) => e.classList.toggle("hidden", t !== "loitering"));
   document.querySelectorAll("#anEdit .arLine").forEach((e) => e.classList.toggle("hidden", t !== "line"));
   document.querySelectorAll("#anEdit .arMotion").forEach((e) => e.classList.toggle("hidden", t !== "motion"));
@@ -1144,8 +1172,9 @@ function anTypeUi() {
 ["arName", "arConf", "arSecs", "arDir", "arSens", "arCool", "arSev"].forEach((id) => ($("#" + id).oninput = $("#" + id).onchange = anRead));
 ["arAlarm", "arEnabled"].forEach((id) => ($("#" + id).onchange = anRead));
 $("#arClasses").onchange = anRead;
-$("#arType").onchange = () => { const r = anRule(); r.type = $("#arType").value; r.zone = []; r.line = []; anDrawing = true;
-  if (/^Zone \d+$|^Line \d+$|^$/.test(r.name)) r.name = `${r.type === "line" ? "Line" : "Zone"} ${anRules.indexOf(r) + 1}`; anFill(); anList(); anDraw(); };
+$("#arType").onchange = () => { const r = anRule(); r.type = $("#arType").value; r.zone = []; r.line = []; anDrawing = r.type !== "appearance";
+  if (r.type === "appearance") { r.classes = ["person"]; r.tags = r.tags || []; if (!$("#anTag").checked) { $("#anTag").checked = true; } }
+  if (/^Zone \d+$|^Line \d+$|^Look \d+$|^$/.test(r.name)) r.name = `${r.type === "line" ? "Line" : r.type === "appearance" ? "Look" : "Zone"} ${anRules.indexOf(r) + 1}`; anFill(); anList(); anDraw(); };
 function anRead() {
   const r = anRule(); if (!r) return;
   r.name = $("#arName").value; r.min_confidence = (+$("#arConf").value || 50) / 100; r.seconds = +$("#arSecs").value || 10;
@@ -1205,9 +1234,11 @@ function anDraw() {
 }
 window.addEventListener("resize", () => { if ($("#anDialog").open) anDraw(); });
 $("#anSave").onclick = async () => {
-  const msg = $("#anMsg"), bad = anRules.find((r) => (r.type === "line" && r.line.length !== 2) || (r.type !== "line" && r.zone.length && r.zone.length < 3) || (r.type !== "motion" && !r.classes.length));
-  if (bad) { msg.className = "small err"; msg.textContent = `“${bad.name}”: ${bad.type === "line" ? "draw the line (2 points)" : !bad.classes.length ? "choose at least one object" : "a zone needs at least 3 corners"}`; return; }
-  try { await api(`/api/cameras/${anCam.id}/analytics`, { method: "PUT", body: { enabled: $("#anOn").checked, rules: anRules } }); }
+  const msg = $("#anMsg"), bad = anRules.find((r) => (r.type === "line" && r.line.length !== 2) || (r.type !== "line" && r.zone.length && r.zone.length < 3) || (r.type !== "motion" && !r.classes.length) || (r.type === "appearance" && !(r.tags || []).length));
+  if (bad) { msg.className = "small err"; msg.textContent = `“${bad.name}”: ${bad.type === "line" ? "draw the line (2 points)" : bad.type === "appearance" && !(bad.tags || []).length ? "choose at least one tag" : !bad.classes.length ? "choose at least one object" : "a zone needs at least 3 corners"}`; return; }
+  if (anRules.some((r) => r.type === "appearance" && r.enabled) && !$("#anTag").checked) $("#anTag").checked = true;   // the rule needs tagging
+  const tagging = { ...(anCam.analytics_tagging || {}), enabled: $("#anTag").checked, main_stream: $("#anTagMain").checked };
+  try { await api(`/api/cameras/${anCam.id}/analytics`, { method: "PUT", body: { enabled: $("#anOn").checked || tagging.enabled, rules: anRules, tagging } }); }
   catch (err) { msg.className = "small err"; msg.textContent = errText(err); return; }
   msg.className = "small ok"; msg.textContent = $("#anOn").checked ? "Saved. The analytics app picks up the new rules within a few seconds." : "Saved (analytics off for this camera).";
   await loadCameras(); anCam = cameras.find((x) => x.id === anCam.id) || anCam;

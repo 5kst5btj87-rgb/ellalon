@@ -24,7 +24,8 @@ COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "t
         "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
         "teddy bear", "hair drier", "toothbrush"]
 WANTED = {"person", "bicycle", "car", "motorcycle", "bus", "truck", "dog", "cat", "backpack", "suitcase"}
-LABELS = {"intrusion": "Intrusion", "line": "Line crossing", "loitering": "Loitering", "motion": "Motion"}
+LABELS = {"intrusion": "Intrusion", "line": "Line crossing", "loitering": "Loitering", "motion": "Motion",
+          "appearance": "Person looks like"}
 
 
 # ---------------------------------------------------------------- object detector
@@ -117,6 +118,10 @@ class Track:
         self.seen, self.hits = now, 1
         self.inside: dict[str, float] = {}       # rule id -> since when inside its zone
         self.fired: set[str] = set()             # rules already reported for this object
+        self.tags: set[str] = set()              # appearance tags (filled in by the tagger thread)
+        self.tag_area = 0                        # box area when last tagged
+        self.tag_busy = False
+        self.sighting: str | None = None
 
 
 def foot(box):
@@ -182,11 +187,20 @@ def inside(poly_px, p) -> bool:
 
 
 # ---------------------------------------------------------------- rules
+def tags_match(wanted: list[str], have: set[str]) -> bool:
+    """Every group asked for must match; several tags of one group mean any of them (red OR blue top)."""
+    groups: dict[str, set[str]] = {}
+    for t in wanted:
+        groups.setdefault(t.split(":", 1)[0], set()).add(t)
+    return bool(groups) and all(g & have for g in groups.values())
+
+
 class RuleEngine:
     """Evaluate one camera's rules on each analysed frame; returns events to publish."""
 
-    def __init__(self, rules: list[dict]):
+    def __init__(self, rules: list[dict], track_always: bool = False):
         self.rules = [r for r in rules if r.get("enabled", True)]
+        self.track_always = track_always        # people tagging needs tracks even without object rules
         self.tracker = Tracker()
         self.last_fire: dict[str, float] = {}
         self.bg = None
@@ -196,7 +210,7 @@ class RuleEngine:
 
     @property
     def needs_objects(self) -> bool:
-        return any(r["type"] != "motion" for r in self.rules)
+        return self.track_always or any(r["type"] != "motion" for r in self.rules)
 
     def _cool(self, r, now) -> bool:
         if now - self.last_fire.get(r["id"], float("-inf")) < float(r.get("cooldown", 10)):
@@ -223,6 +237,14 @@ class RuleEngine:
             for t in tracks:
                 if t.cls not in r.get("classes", ["person"]) or t.conf < float(r.get("min_confidence", 0.5)) or t.hits < 2:
                     continue                         # need 2 sightings: ignores one-frame false detections
+                if r["type"] == "appearance":
+                    if not t.tags or r["id"] in t.fired or (zone is not None and not inside(zone, t.foot)):
+                        continue
+                    if tags_match(r.get("tags") or [], t.tags):
+                        t.fired.add(r["id"])
+                        if self._cool(r, now):
+                            events.append({"rule": r, "object": t, "detail": ", ".join(sorted(t.tags))})
+                    continue
                 if r["type"] == "line":
                     a, b = to_px(r["line"], w, h)
                     c = crossing(a, b, t.prev_foot, t.foot)

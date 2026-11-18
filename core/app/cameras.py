@@ -613,6 +613,7 @@ def cam_dict(c: Camera, reveal: bool = True) -> dict:
     d["status"] = CAM_STATUS.get(c.id, {"state": "checking", "detail": "first check in progress"})
     d["events"] = EVT_STATUS.get(c.id) if (c.meta or {}).get("events_enabled") else None
     d["analytics_rules"] = (c.meta or {}).get("analytics_rules", [])
+    d["analytics_tagging"] = (c.meta or {}).get("analytics_tagging") or Tagging().model_dump()
     if not reveal:  # only admins and modules see credentials
         d["settings"]["password"] = ""
         d["url"], d["substream_url"] = _strip_creds(d["url"]), _strip_creds(d["substream_url"])
@@ -775,7 +776,7 @@ OBJECT_CLASSES = ("person", "bicycle", "car", "motorcycle", "bus", "truck", "dog
 class AnalyticsRule(BaseModel):
     id: str
     name: str = ""
-    type: Literal["intrusion", "line", "loitering", "motion"]
+    type: Literal["intrusion", "line", "loitering", "motion", "appearance"]
     enabled: bool = True
     zone: list[list[float]] = []       # polygon, points 0..1 (x, y) of the picture
     line: list[list[float]] = []       # two points 0..1
@@ -787,11 +788,20 @@ class AnalyticsRule(BaseModel):
     cooldown: float = 10
     alarm: bool = True
     severity: Literal["warning", "high", "critical"] = "high"
+    tags: list[str] = []               # appearance: e.g. ["gender:man", "top_color:red"]
+
+
+class Tagging(BaseModel):
+    """People tagging (clothes, colours, bags, ...) by the analytics module."""
+    enabled: bool = False
+    main_stream: bool = True           # analyse the sharper main stream (more CPU)
+    min_height: int = 90               # smallest person (pixels tall) worth tagging
 
 
 class AnalyticsIn(BaseModel):
     enabled: bool = True
     rules: list[AnalyticsRule] = []
+    tagging: Tagging | None = None     # None = keep what is stored
 
 
 @router.put("/cameras/{cid}/analytics")
@@ -811,6 +821,13 @@ async def save_analytics(cid: int, body: AnalyticsIn, _=Depends(require("admin")
         r.min_confidence = min(0.95, max(0.2, r.min_confidence))
         r.seconds, r.cooldown = max(1, r.seconds), max(0, r.cooldown)
         r.sensitivity = min(50, max(0.1, r.sensitivity))
+        r.tags = [t.strip()[:40] for t in r.tags if t.strip()][:12]
+        if r.type == "appearance" and not r.tags:
+            raise HTTPException(400, f"{r.name}: choose at least one tag (for example Man, Red top)")
+        if r.type == "appearance":
+            r.classes = ["person"]
+    if body.tagging:
+        body.tagging.min_height = min(400, max(40, body.tagging.min_height))
     if len(body.rules) > 20:
         raise HTTPException(400, "At most 20 rules per camera")
     with SessionLocal() as s:
@@ -818,6 +835,8 @@ async def save_analytics(cid: int, body: AnalyticsIn, _=Depends(require("admin")
         if not c:
             raise HTTPException(404)
         c.meta = {**(c.meta or {}), "analytics_rules": [r.model_dump() for r in body.rules]}
+        if body.tagging is not None:
+            c.meta = {**c.meta, "analytics_tagging": body.tagging.model_dump()}
         c.analytics = body.enabled
         s.commit()
         out = cam_dict(c)

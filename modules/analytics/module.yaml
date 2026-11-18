@@ -1,9 +1,9 @@
 name: analytics
 display_name: Video Analytics
-version: 0.2.0
+version: 0.3.0
 category: analytics
-description: Per-camera video analytics - people/vehicle detection (YOLOX), intrusion zones, line crossing, loitering, motion areas. Configure per camera in the Cameras tab.
-image: ellalon/analytics:0.2.0
+description: Per-camera video analytics - people/vehicle detection (YOLOX), intrusion zones, line crossing, loitering, motion areas, people tagging (clothes, colours, bags, glasses, man/woman) with search. Configure per camera in the Cameras tab or the Analytics tab.
+image: ellalon/analytics:0.3.0
 autostart: false
 http_port: 8000
 gpu: false          # set true + build a GPU image for deep-learning detectors
@@ -11,7 +11,9 @@ shm_size: 512m
 env:
   ANALYTICS_FPS: "3"           # analysed frames per second per camera
   ANALYTICS_SNAPSHOT_DAYS: "14" # keep event snapshots this long
-capabilities: [motion, objects, intrusion, line-crossing, loitering]
+  ANALYTICS_SIGHTING_DAYS: "30" # keep tagged people (search) this long
+  ANALYTICS_TAG_THREADS: "2"    # CPU threads for people tagging
+capabilities: [motion, objects, intrusion, line-crossing, loitering, people-tagging, appearance-search]
 volumes:
   - host: data
     container: /data
