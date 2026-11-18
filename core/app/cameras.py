@@ -303,15 +303,20 @@ def _now() -> str:
 
 
 def _digest(challenge: str, user: str, pw: str, method: str, uri: str) -> str:
-    f = dict(re.findall(r'(\w+)="?([^",]+)"?', challenge))
+    f = dict(re.findall(r'([\w-]+)="?([^",]+)"?', challenge))
     realm, nonce, qop = f.get("realm", ""), f.get("nonce", ""), f.get("qop", "")
-    h = lambda x: hashlib.md5(x.encode()).hexdigest()
+    alg = f.get("algorithm", "")
+    fn = hashlib.sha256 if alg.upper().startswith("SHA-256") else hashlib.md5
+    h = lambda x: fn(x.encode()).hexdigest()
     ha1, ha2 = h(f"{user}:{realm}:{pw}"), h(f"{method}:{uri}")
-    extra = ""
+    cnonce = os.urandom(8).hex()
+    if alg.upper().endswith("-SESS"):
+        ha1 = h(f"{ha1}:{nonce}:{cnonce}")
+    extra = f", algorithm={alg}" if alg else ""      # some devices refuse the login without it
     if "auth" in [q.strip() for q in qop.split(",")]:
-        nc, cnonce = "00000001", os.urandom(8).hex()
+        nc = "00000001"
         resp = h(f"{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}")
-        extra = f', qop=auth, nc={nc}, cnonce="{cnonce}"'
+        extra += f', qop=auth, nc={nc}, cnonce="{cnonce}"'
     else:
         resp = h(f"{ha1}:{nonce}:{ha2}")
     out = f'Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{resp}"{extra}'
@@ -356,9 +361,13 @@ class _Rtsp:
         return int(status_line.split()[1]), hdrs
 
 
-def _auth_for(hdrs, user, pw, uri, scheme=None):
-    challenges = hdrs.get("www-authenticate", [])
-    dig = next((c for c in challenges if c.lower().startswith("digest")), None)
+def _digests(hdrs) -> list[str]:
+    return [c for c in hdrs.get("www-authenticate", []) if c.lower().startswith("digest")]
+
+
+def _auth_for(hdrs, user, pw, uri, scheme=None, which=0):
+    digs = _digests(hdrs)
+    dig = digs[min(which, len(digs) - 1)] if digs else None
     if dig and scheme != "basic":
         return _digest(dig, user, pw, "DESCRIBE", uri)
     return "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()
@@ -373,6 +382,9 @@ def _who(hdrs) -> str:
     """Short description of the camera's login request, for error messages."""
     ch = hdrs.get("www-authenticate", [])
     schemes = sorted({c.split()[0].capitalize() for c in ch if c.strip()})
+    algs = sorted({a.upper() for a in re.findall(r'algorithm="?([\w-]+)', " ".join(ch))})
+    if algs:
+        schemes = [f"{x} ({'/'.join(algs)})" if x == "Digest" else x for x in schemes]
     realm = re.search(r'realm="([^"]*)"', " ".join(ch))
     server = (hdrs.get("server") or [""])[0]
     bits = [("/".join(schemes) + " login") if schemes else "", f'realm "{realm.group(1)}"' if realm else "",
@@ -407,6 +419,11 @@ async def probe_url(url: str | None, timeout: float = 5) -> dict:
         code, h2 = await conn.describe(uri, _auth_for(hdrs, user, pw, uri, scheme))
         if code == 401 and scheme != "basic" and _nonce(h2) and _nonce(h2) != _nonce(hdrs):
             code, h2 = await conn.describe(uri, _auth_for(h2, user, pw, uri, scheme))
+        if code == 401 and scheme != "basic":     # several algorithms offered (MD5, SHA-256): try the others
+            for i in range(1, len(_digests(h2 if _digests(h2) else hdrs))):
+                code, h3 = await conn.describe(uri, _auth_for(h2 if _digests(h2) else hdrs, user, pw, uri, None, i))
+                if code != 401:
+                    return code, h3
         return code, h2
 
     try:
