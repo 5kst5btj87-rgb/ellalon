@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from .auth import (ROLE_RANK, decode, ensure_admin, hash_password, issue_token, require,
                    verify_password)
 from .bus import bus, event_dict
+from .camera_events import events_manager
 from .cameras import camera_monitor, hooks as camera_hooks, router as cameras_router
 from .config import settings
 from .db import Camera, Event, ModuleState, SessionLocal, User, init_db
@@ -119,7 +120,8 @@ async def lifespan(app: FastAPI):
     storage_mod.hooks.update(apply=apply_storage, test=docker_mgr.test_storage)
     camera_hooks["discover"] = docker_mgr.discover
     tasks = [asyncio.create_task(reconciler()), asyncio.create_task(bus.consume()),
-             asyncio.create_task(camera_monitor()), asyncio.create_task(recorder_monitor())]
+             asyncio.create_task(camera_monitor()), asyncio.create_task(recorder_monitor()),
+             asyncio.create_task(events_manager())]
     log.info("Ellalon core %s started", settings.version)
     yield
     for t in tasks:

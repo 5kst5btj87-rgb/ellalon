@@ -148,3 +148,11 @@ Web UI → System → **Rescan modules** → **Enable**. Core creates the contai
 Cameras → **Discover** scans the server's networks (or ranges you enter) with ONVIF, Hikvision SADP and an RTSP port scan,
 shows vendor/model/MAC, and adds the ticked cameras with one username/password. Tick rows to **Delete selected**, or **Delete all**
 (type DELETE to confirm). Deleting a camera keeps its saved recordings.
+
+### Camera analytics events and the Alarm manager
+Edit a camera → **Camera analytics events**: receive detections straight from the camera — Hikvision event stream (ISAPI),
+Dahua event stream, or ONVIF events for Axis, Provision, FLIR and other ONVIF cameras (HTTP/ONVIF port).
+**Find event types** lists what the camera offers; tick the ones you want (none = all). With **Send to Alarm manager**
+each detection raises a `camera.alarm` at the chosen priority; otherwise it is only logged in Events. The Cameras table
+shows an Events column (Listening / Error, last event). The **Alarm manager** tab (formerly Incidents) groups repeats of an
+open alarm (count), offers Live view, Acknowledge/Close (single, selected or all), an open-alarm badge, pop-ups and an optional sound.

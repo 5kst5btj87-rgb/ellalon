@@ -23,7 +23,7 @@
     <b class="brand">ELLALON</b>
     <nav>
       <a data-tab="wall" class="active">Video wall</a>
-      <a data-tab="incidents">Incidents</a>
+      <a data-tab="incidents">Alarm manager <span id="alarmBadge" class="badge hidden"></span></a>
       <a data-tab="events">Events</a>
       <a data-tab="playback">Playback</a>
       <a data-tab="cameras">Cameras</a>
@@ -59,8 +59,14 @@
     </div>
 
     <div id="tab-incidents" class="tab hidden">
-      <div class="toolbar"><select id="incFilter"><option value="">All</option><option>open</option><option>acknowledged</option><option>closed</option></select></div>
-      <table><thead><tr><th>Time</th><th>Severity</th><th>Title</th><th>Camera</th><th>Status</th><th></th></tr></thead><tbody id="incidents"></tbody></table>
+      <div class="toolbar">
+        <label>Show <select id="incFilter"><option value="active" selected>Active (open + acknowledged)</option><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="closed">Closed</option><option value="">All</option></select></label>
+        <button id="incAckAll" class="ghost">Acknowledge all open</button>
+        <button id="incCloseSel" class="ghost" disabled>Close selected</button>
+        <label class="inline"><input type="checkbox" id="alarmSound"> Sound on new alarm</label>
+        <span id="incSummary" class="muted small"></span>
+      </div>
+      <table><thead><tr><th><input type="checkbox" id="incSelAll" title="Select all"></th><th>Time</th><th>Priority</th><th>Alarm</th><th>Camera</th><th>Count</th><th>Status</th><th></th></tr></thead><tbody id="incidents"></tbody></table>
     </div>
 
     <div id="tab-events" class="tab hidden">
@@ -87,7 +93,7 @@
         <span id="camSummary" class="muted"></span>
         <span class="muted">Click Edit to change a camera or copy its settings to other cameras.</span>
       </div>
-      <table><thead><tr><th class="adm"><input type="checkbox" id="camSelAll" title="Select all"></th><th>#</th><th>Name</th><th>Status</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
+      <table><thead><tr><th class="adm"><input type="checkbox" id="camSelAll" title="Select all"></th><th>#</th><th>Name</th><th>Status</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th>Events</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
     </div>
 
     <div id="tab-integrations" class="tab hidden">
@@ -127,7 +133,7 @@
     <label>Brand<select name="brand" class="brandSel"></select></label>
     <label>IP address<input name="ip" required placeholder="192.168.1.64"></label>
     <label class="rtspOnly">RTSP port<input name="port" type="number" value="554"></label>
-    <label class="onvifOnly">ONVIF port<input name="onvif_port" type="number" value="80"></label>
+    <label>HTTP / ONVIF port<input name="onvif_port" type="number" value="80" title="Web port of the camera - used for ONVIF and analytics events"></label>
     <label>Username<input name="username" autocomplete="off"></label>
     <label>Password<input name="password" type="password" autocomplete="new-password"></label>
     <label class="chOnly">Channel<input name="channel" type="number" value="1" min="1"></label>
@@ -140,6 +146,21 @@
     <label><input type="checkbox" name="analytics"> Analytics</label>
     <label><input type="checkbox" name="face_recognition"> Face recognition</label>
     <label><input type="checkbox" name="enabled" checked> Enabled</label>
+  </div>
+  <div class="evbox">
+    <h4>Camera analytics events</h4>
+    <label class="inline"><input type="checkbox" name="events_enabled"> Receive analytics events from the camera (motion, line crossing, intrusion, tampering…)</label>
+    <div class="evOnly hidden">
+      <p class="muted small" id="evMethod"></p>
+      <div class="row"><button type="button" class="ghost" id="evFind">Find event types</button> <span id="evMsg" class="small"></span></div>
+      <div id="evTypes" class="checks"></div>
+      <p class="muted small" id="evHint"></p>
+      <div class="checks">
+        <label><input type="checkbox" name="events_alarm" checked> Send to Alarm manager</label>
+        <label>Priority <select name="alarm_severity"><option value="warning">Warning</option><option value="high" selected>High</option><option value="critical">Critical</option></select></label>
+      </div>
+      <p class="muted small">Not sent to the Alarm manager = shown in the Events tab only.</p>
+    </div>
   </div>
   <p class="muted small" id="camUrls"></p>
   <div id="copyBox" class="copybox hidden">
@@ -270,6 +291,14 @@
   <p id="discResult" class="small"></p>
   <button type="button" class="ghost" data-close>Close</button> <button type="button" id="discAdd" class="hidden">Add selected</button>
 </form></dialog>
+
+<dialog id="liveDialog" class="wide"><form method="dialog">
+  <h3 id="liveTitle"></h3>
+  <div class="livebox"><iframe id="liveFrame" allow="autoplay; fullscreen"></iframe></div>
+  <p id="liveInfo" class="muted small"></p>
+  <button class="ghost">Close</button> <button type="button" id="liveAck">Acknowledge</button> <button type="button" class="ghost" id="liveClose">Close alarm</button>
+</form></dialog>
+<div id="toasts" class="toasts"></div>
 
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>
   <div class="stack">

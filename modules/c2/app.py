@@ -47,12 +47,38 @@ def subst(args: dict, ev: dict) -> dict:
             else v for k, v in args.items()}
 
 
+REPEAT_WINDOW = 300     # seconds: the same alarm again while still open -> count it, don't open a new one
+MAX_INCIDENTS = 5000
+
+
+def _age(ts: str) -> float:
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(ts)).total_seconds()
+    except (TypeError, ValueError):
+        return 1e9
+
+
 async def open_incident(ev: dict, rule: str):
+    p = ev.get("payload") or {}
+    key = [ev.get("camera_id"), ev.get("type"), p.get("event") or p.get("title") or ev.get("source")]
+    for inc in db["incidents"].values():
+        if inc["status"] != "closed" and inc.get("key") == key and _age(inc.get("last") or inc["created"]) < REPEAT_WINDOW:
+            inc["count"] = inc.get("count", 1) + 1
+            inc["last"] = now()
+            inc["event"] = ev
+            save()
+            await m.publish("incident.updated", {"id": inc["id"], "count": inc["count"], "status": inc["status"]})
+            return
     iid = uuid.uuid4().hex[:8]
     inc = {"id": iid, "status": "open", "rule": rule, "severity": ev.get("severity"),
-           "title": f"{ev.get('type')} from {ev.get('source')}", "camera_id": ev.get("camera_id"),
+           "title": p.get("title") or f"{ev.get('type')} from {ev.get('source')}", "camera_id": ev.get("camera_id"),
+           "key": key, "count": 1, "last": now(),
            "event": ev, "created": now(), "log": [{"ts": now(), "by": "system", "msg": "opened"}]}
     db["incidents"][iid] = inc
+    if len(db["incidents"]) > MAX_INCIDENTS:     # drop the oldest closed alarms
+        old = sorted((i for i in db["incidents"].values() if i["status"] == "closed"), key=lambda i: i["created"])
+        for i in old[:len(db["incidents"]) - MAX_INCIDENTS]:
+            db["incidents"].pop(i["id"], None)
     save()
     m.status["open_incidents"] = sum(i["status"] != "closed" for i in db["incidents"].values())
     await m.publish("incident.opened", {"id": iid, "title": inc["title"]}, ev.get("severity", "high"),
@@ -120,6 +146,32 @@ def incidents(status: str | None = None):
 class IncidentUpdate(BaseModel):
     status: str | None = None     # acknowledged | closed
     note: str | None = None
+
+
+class BulkUpdate(BaseModel):
+    ids: list[str] = []
+    status: str                   # acknowledged | closed
+    note: str | None = None
+
+
+@app.post("/incidents/bulk")
+async def bulk_update(body: BulkUpdate, request: Request):
+    """Acknowledge or close many alarms at once (empty ids = every alarm that is not closed)."""
+    user = request.headers.get("x-ellalon-user", "unknown")
+    done = []
+    for inc in db["incidents"].values():
+        if inc["status"] == "closed" or (body.ids and inc["id"] not in body.ids):
+            continue
+        if body.status == "acknowledged" and inc["status"] != "open":
+            continue
+        inc["status"] = body.status
+        inc["log"].append({"ts": now(), "by": user, "msg": f"status -> {body.status}" + (f": {body.note}" if body.note else "")})
+        done.append(inc["id"])
+    save()
+    m.status["open_incidents"] = sum(i["status"] != "closed" for i in db["incidents"].values())
+    if done:
+        await m.publish("incident.updated", {"ids": done, "status": body.status, "by": user})
+    return {"updated": len(done)}
 
 
 @app.patch("/incidents/{iid}")

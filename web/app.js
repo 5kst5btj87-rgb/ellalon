@@ -39,7 +39,7 @@ async function start() {
   $("#login").classList.add("hidden"); $("#shell").classList.remove("hidden");
   $("#who").textContent = `${me.sub} (${me.role})`;
   cameras = await api("/api/cameras");
-  connectWs(); renderWall(); renderWallSide(); loadLayouts(); show("wall");
+  connectWs(); renderWall(); renderWallSide(); loadLayouts(); refreshAlarmBadge(); show("wall");
 }
 
 // ---------------------------------------------------------------- tabs
@@ -65,7 +65,10 @@ function connectWs() {
     if (["high", "critical"].includes(data.severity)) flashCamera(data.camera_id);
     if (data.type.startsWith("camera.") && !$("#tab-cameras").classList.contains("hidden")) loadCameras();
     if (data.source === "integrations" && !$("#tab-integrations").classList.contains("hidden")) refreshIntegrationsSoon();
-    if (data.type.startsWith("incident.") && !$("#tab-incidents").classList.contains("hidden")) loadIncidents();
+    if (data.type.startsWith("incident.")) {
+      if (!$("#tab-incidents").classList.contains("hidden")) loadIncidents(); else refreshAlarmBadge();
+      if (data.type === "incident.opened") { alarmToast(data); alarmBeep(); }
+    }
   };
 }
 const eventRow = (e) => `<tr><td>${new Date(e.ts).toLocaleTimeString()}</td><td>${esc(e.source)}</td><td>${esc(e.type)}</td>
@@ -231,18 +234,94 @@ function flashCamera(id) {
   document.querySelectorAll(`.tile[data-cam="${id}"]`).forEach((t) => { t.classList.add("alert"); setTimeout(() => t.classList.remove("alert"), 8000); });
 }
 
-// ---------------------------------------------------------------- incidents (c2 module)
+// ---------------------------------------------------------------- alarm manager (c2 module)
+let incRows = [];
+const incSelected = new Set();
+const SEV_NAME = { info: "Info", low: "Low", warning: "Warning", high: "High", critical: "Critical" };
 $("#incFilter").onchange = loadIncidents;
+$("#alarmSound").checked = localStorage.getItem("ellalon_alarm_sound") === "on";
+$("#alarmSound").onchange = () => localStorage.setItem("ellalon_alarm_sound", $("#alarmSound").checked ? "on" : "off");
 async function loadIncidents() {
+  const f = $("#incFilter").value;
   try {
-    const rows = await mod("c2", "/incidents" + ($("#incFilter").value ? "?status=" + $("#incFilter").value : ""));
-    $("#incidents").innerHTML = rows.map((i) => `<tr><td>${new Date(i.created).toLocaleString()}</td>
-      <td><span class="sev ${esc(i.severity)}">${esc(i.severity)}</span></td><td>${esc(i.title)}</td><td>${esc(camName(i.camera_id))}</td><td>${esc(i.status)}</td>
-      <td>${i.status === "open" ? `<button onclick="incSet('${i.id}','acknowledged')">Ack</button>` : ""}
-          ${i.status !== "closed" ? `<button class="ghost" onclick="incSet('${i.id}','closed')">Close</button>` : ""}</td></tr>`).join("") || `<tr><td colspan=6 class="muted">No incidents</td></tr>`;
-  } catch { $("#incidents").innerHTML = `<tr><td colspan=6 class="muted">C&C module not running</td></tr>`; }
+    const rows = await mod("c2", "/incidents" + (f && f !== "active" ? "?status=" + f : ""));
+    incRows = f === "active" ? rows.filter((i) => i.status !== "closed") : rows;
+  } catch {
+    incRows = []; $("#incidents").innerHTML = `<tr><td colspan=8 class="muted">The C&C module is not running (System tab)</td></tr>`; return;
+  }
+  for (const id of [...incSelected]) if (!incRows.some((i) => i.id === id)) incSelected.delete(id);
+  const t = (x) => new Date(x).toLocaleString();
+  $("#incidents").innerHTML = incRows.map((i) => {
+    const p = i.event?.payload || {}, extra = [p.target, p.rule, p.region && "region " + p.region].filter(Boolean).join(" · ");
+    return `<tr class="inc ${esc(i.status)}">
+      <td>${i.status !== "closed" ? `<input type="checkbox" class="incSel" value="${esc(i.id)}" ${incSelected.has(i.id) ? "checked" : ""}>` : ""}</td>
+      <td>${t(i.created)}${i.count > 1 ? `<div class="muted small">last ${t(i.last)}</div>` : ""}</td>
+      <td><span class="sev ${esc(i.severity)}">${esc(SEV_NAME[i.severity] || i.severity)}</span></td>
+      <td>${esc(i.title)}${extra ? `<div class="muted small">${esc(extra)}</div>` : ""}</td>
+      <td>${esc(camName(i.camera_id))}</td><td>${i.count > 1 ? `<b>${i.count}×</b>` : "1"}</td><td>${esc(i.status)}</td>
+      <td class="nowrap">${i.camera_id ? `<button class="ghost" onclick="incLive('${esc(i.id)}')">Live</button> ` : ""}
+        ${i.status === "open" ? `<button onclick="incSet('${esc(i.id)}','acknowledged')">Ack</button> ` : ""}
+        ${i.status !== "closed" ? `<button class="ghost" onclick="incSet('${esc(i.id)}','closed')">Close</button>` : ""}</td></tr>`;
+  }).join("") || `<tr><td colspan=8 class="muted">No alarms</td></tr>`;
+  $("#incidents").querySelectorAll(".incSel").forEach((cb) => (cb.onchange = () => { cb.checked ? incSelected.add(cb.value) : incSelected.delete(cb.value); incSelUi(); }));
+  const open = incRows.filter((i) => i.status === "open").length;
+  $("#incSummary").textContent = f === "active" ? `${open} open · ${incRows.length - open} acknowledged` : `${incRows.length} alarm(s)`;
+  incSelUi(); refreshAlarmBadge();
 }
-window.incSet = async (id, status) => { const note = status === "closed" ? prompt("Closing note") || "" : ""; await mod("c2", `/incidents/${id}`, { method: "PATCH", body: { status, note } }); loadIncidents(); };
+function incSelUi() {
+  const open = incRows.filter((i) => i.status !== "closed");
+  $("#incCloseSel").disabled = !incSelected.size;
+  $("#incCloseSel").textContent = incSelected.size ? `Close selected (${incSelected.size})` : "Close selected";
+  $("#incSelAll").checked = !!open.length && incSelected.size === open.length;
+}
+$("#incSelAll").onchange = () => { incSelected.clear(); if ($("#incSelAll").checked) incRows.filter((i) => i.status !== "closed").forEach((i) => incSelected.add(i.id)); loadIncidents(); };
+async function incBulk(body) {
+  try { await mod("c2", "/incidents/bulk", { method: "POST", body }); } catch (err) { alert(errText(err)); }
+  incSelected.clear(); loadIncidents();
+}
+$("#incAckAll").onclick = () => incBulk({ ids: [], status: "acknowledged" });
+$("#incCloseSel").onclick = () => { const note = prompt(`Closing note for ${incSelected.size} alarm(s) (optional):`); if (note !== null) incBulk({ ids: [...incSelected], status: "closed", note }); };
+window.incSet = async (id, status) => {
+  const note = status === "closed" ? prompt("Closing note (optional):") : "";
+  if (note === null) return;
+  await mod("c2", `/incidents/${id}`, { method: "PATCH", body: { status, note } }); loadIncidents();
+};
+window.incLive = (id) => {
+  const i = incRows.find((x) => x.id === id); if (!i) return;
+  const cam = cameras.find((c) => c.id === i.camera_id);
+  $("#liveTitle").textContent = `${i.title}`;
+  $("#liveInfo").textContent = `${SEV_NAME[i.severity] || i.severity} · ${i.status} · first ${new Date(i.created).toLocaleString()}${i.count > 1 ? ` · ${i.count} times` : ""}`;
+  $("#liveFrame").src = cam ? `/modules/streaming/stream.html?src=cam_${cam.id}&mode=webrtc,mse` : "about:blank";
+  $("#liveAck").classList.toggle("hidden", i.status !== "open"); $("#liveClose").classList.toggle("hidden", i.status === "closed");
+  $("#liveAck").onclick = async () => { await incSet(id, "acknowledged"); $("#liveDialog").close(); };
+  $("#liveClose").onclick = async () => { await incSet(id, "closed"); $("#liveDialog").close(); };
+  $("#liveDialog").showModal();
+};
+$("#liveDialog").onclose = () => ($("#liveFrame").src = "about:blank");
+async function refreshAlarmBadge() {
+  try {
+    const n = (await mod("c2", "/incidents?status=open")).length, b = $("#alarmBadge");
+    b.textContent = n > 99 ? "99+" : n; b.classList.toggle("hidden", !n);
+  } catch {}
+}
+let audioCtx;
+function alarmBeep() {
+  if (!$("#alarmSound").checked) return;
+  try {
+    audioCtx ||= new AudioContext();
+    [0, 0.25].forEach((d) => { const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(audioCtx.destination);
+      o.start(audioCtx.currentTime + d); o.stop(audioCtx.currentTime + d + 0.15); });
+  } catch {}
+}
+function alarmToast(e) {
+  const t = document.createElement("div");
+  t.className = "toast " + esc(e.severity);
+  t.innerHTML = `<b>New alarm</b> ${esc(e.payload?.title || "")}<div class="small">${esc(camName(e.camera_id))}</div>`;
+  t.onclick = () => { t.remove(); show("incidents"); };
+  $("#toasts").prepend(t); setTimeout(() => t.remove(), 8000);
+  while ($("#toasts").children.length > 4) $("#toasts").lastElementChild.remove();
+}
 
 // ---------------------------------------------------------------- playback (vms-recorder module)
 function loadPlayback() {
@@ -267,10 +346,10 @@ $("#pbLoad").onclick = async () => {
 // ---------------------------------------------------------------- cameras
 let brands = [], editing = null;
 const COPY_FIELDS = [["brand", "Brand & ports"], ["credentials", "Username & password"], ["substream", "Substream on/off"],
-  ["recording", "Recording"], ["analytics", "Analytics"], ["face_recognition", "Face recognition"], ["location", "Location"], ["enabled", "Enabled"], ["storage", "Recording storage"]];
-const F_STR = ["name", "location", "brand", "ip", "username", "password", "main_path", "sub_path", "storage_id"];
+  ["recording", "Recording"], ["analytics", "Analytics"], ["face_recognition", "Face recognition"], ["location", "Location"], ["enabled", "Enabled"], ["storage", "Recording storage"], ["events", "Analytics events"]];
+const F_STR = ["name", "location", "brand", "ip", "username", "password", "main_path", "sub_path", "storage_id", "alarm_severity"];
 const F_NUM = ["port", "onvif_port", "channel", "start_number"];
-const F_BOOL = ["use_substream", "record", "analytics", "face_recognition", "enabled"];
+const F_BOOL = ["use_substream", "record", "analytics", "face_recognition", "enabled", "events_enabled", "events_alarm"];
 const el = (f, k) => f.elements.namedItem(k);
 const errText = (e) => { let t = e.message; try { t = JSON.parse(t).detail || t; } catch {} return typeof t === "string" ? t : JSON.stringify(t); };
 const hideCreds = (u) => (u || "").replace(/\/\/[^@/]*@/, "//***@");
@@ -290,7 +369,44 @@ function brandUi(form) {
   form.querySelectorAll(".onvifOnly").forEach((e) => e.classList.toggle("hidden", !b.onvif));
   form.querySelectorAll(".customOnly").forEach((e) => e.classList.toggle("hidden", !b.custom));
   if (form.id === "batchForm") batchCount();
+  if (form.id === "camEdit") evUi();
 }
+// ---- analytics events from the camera
+const EV_METHOD = { hikvision: "Uses the Hikvision event stream (ISAPI) on the HTTP port.", dahua: "Uses the Dahua event stream on the HTTP port." };
+function evUi() {
+  const f = $("#camEdit"), on = el(f, "events_enabled").checked;
+  f.querySelector(".evOnly").classList.toggle("hidden", !on);
+  el(f, "alarm_severity").disabled = !el(f, "events_alarm").checked;
+  $("#evMethod").textContent = EV_METHOD[el(f, "brand").value] || "Uses ONVIF events on the HTTP/ONVIF port (Axis, Provision, FLIR and other ONVIF cameras). ONVIF must be enabled on the camera.";
+  const n = $("#evTypes").querySelectorAll("input").length;
+  $("#evHint").textContent = n ? "Tick the events you want. All or none ticked = every event the camera sends." : "Every event the camera sends is received. Click “Find event types” to choose specific ones.";
+}
+function renderEvTypes(types, chosen, saved = false) {
+  $("#evTypes").dataset.saved = saved ? "1" : "";
+  $("#evTypes").innerHTML = types.map((t) => `<label title="${esc(t.id)}"><input type="checkbox" value="${esc(t.id)}" ${!chosen.length || chosen.includes(t.id) ? "checked" : ""}> ${esc(t.label)}</label>`).join("");
+  evUi();
+}
+el($("#camEdit"), "events_enabled").addEventListener("change", evUi);
+el($("#camEdit"), "events_alarm").addEventListener("change", evUi);
+$("#evFind").onclick = async () => {
+  const msg = $("#evMsg"), f = $("#camEdit"); msg.className = "small muted"; msg.textContent = "Asking the camera…"; $("#evFind").disabled = true;
+  const chosen = [...$("#evTypes").querySelectorAll("input")].filter((b) => b.checked).map((b) => b.value);
+  const prev = $("#evTypes").querySelectorAll("input").length;
+  const wasAll = !prev || (!$("#evTypes").dataset.saved && chosen.length === prev);   // saved list = an explicit choice
+  try {
+    const r = await api("/api/cameras/events/probe", { method: "POST", body: formData(f) });
+    renderEvTypes(r.types, wasAll ? [] : chosen);
+    msg.className = "small ok"; msg.textContent = `${r.types.length} event type(s) found · ${r.method}`;
+  } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
+  $("#evFind").disabled = false;
+};
+const EV_STATE = { connected: ["ok", "Listening"], connecting: ["wait", "Connecting…"], error: ["bad", "Error"] };
+const evStateHtml = (e) => {
+  if (!e) return "–";
+  const [cls, text] = EV_STATE[e.state] || EV_STATE.connecting;
+  const last = e.last ? ` · last: ${e.last_event} at ${new Date(e.last).toLocaleString()}` : " · no events yet";
+  return `<span class="cstat" title="${esc((e.method || "") + " - " + (e.detail || "") + last)}"><span class="dot ${cls}"></span> ${text}</span>`;
+};
 function formData(form) {
   const o = {};
   for (const k of F_STR) { const e = el(form, k); if (e) o[k] = e.value.trim(); }
@@ -298,6 +414,10 @@ function formData(form) {
   for (const k of F_BOOL) { const e = el(form, k); if (e) o[k] = e.checked; }
   if (o.location === "") o.location = null;
   if (o.storage_id === "") o.storage_id = null;
+  if (form.id === "camEdit") {          // all boxes or none ticked = all event types
+    const boxes = [...$("#evTypes").querySelectorAll("input")], on = boxes.filter((b) => b.checked).map((b) => b.value);
+    o.event_types = on.length === boxes.length ? [] : on;
+  }
   return o;
 }
 function fillForm(form, s) {
@@ -310,11 +430,16 @@ $("#camAdd").onclick = async () => {
   await loadBrands(); editing = null;
   const f = $("#camEdit"); f.reset(); brandUi(f);
   $("#camTitle").textContent = "Add camera"; $("#camUrls").textContent = ""; $("#camMsg").textContent = "";
+  renderEvTypes([], []); $("#evMsg").textContent = "";
   $("#copyBox").classList.add("hidden"); $("#camDialog").showModal();
 };
 window.editCam = async (id) => {
   await loadBrands(); editing = cameras.find((c) => c.id === id);
-  const f = $("#camEdit"); f.reset(); fillForm(f, { ...editing.settings, name: editing.name });
+  const f = $("#camEdit"); f.reset(); $("#evMsg").textContent = "";
+  renderEvTypes((editing.settings.event_types || []).map((id) => ({ id, label: id })), editing.settings.event_types || [], true);
+  fillForm(f, { ...editing.settings, name: editing.name });
+  if (editing.events) { const [, t] = EV_STATE[editing.events.state] || []; $("#evMsg").className = "small " + (editing.events.state === "error" ? "err" : "muted");
+    $("#evMsg").textContent = `${t || ""}: ${editing.events.detail || ""}`; }
   $("#camTitle").textContent = "Edit camera: " + editing.name; $("#camMsg").textContent = "";
   $("#camUrls").textContent = "Main: " + hideCreds(editing.url) + (editing.substream_url ? "   ·   Sub: " + hideCreds(editing.substream_url) : "   ·   no substream");
   $("#copyFields").innerHTML = COPY_FIELDS.map(([k, l]) => `<label><input type="checkbox" value="${k}"> ${l}</label>`).join("");
@@ -419,9 +544,9 @@ async function loadCameras() {
   for (const id of [...camSelected]) if (!cameras.some((c) => c.id === id)) camSelected.delete(id);
   $("#cameras").innerHTML = cameras.map((c) => { const s = c.settings || {}, onv = ["onvif", "flir"].includes(s.brand);
     return `<tr>${admin ? `<td><input type="checkbox" class="camSel" value="${c.id}" ${camSelected.has(c.id) ? "checked" : ""}></td>` : ""}<td>${c.id}</td><td>${esc(c.name)}</td><td>${camStateHtml(c.status)}</td><td>${esc(label(s.brand))}</td><td>${esc(s.ip)}</td><td>${onv ? "–" : esc(s.channel)}</td>
-    <td>${esc(c.location || "")}</td><td>${yes(c.substream_url)}</td><td>${yes(c.record)}</td><td>${yes(c.analytics)}</td><td>${yes(c.face_recognition)}</td>
+    <td>${esc(c.location || "")}</td><td>${yes(c.substream_url)}</td><td>${yes(c.record)}</td><td>${yes(c.analytics)}</td><td>${yes(c.face_recognition)}</td><td>${evStateHtml(c.events)}</td>
     <td>${admin ? `<button class="ghost" onclick="editCam(${c.id})">Edit</button> <button class="danger" onclick="delCam(${c.id})">Delete</button>` : ""}</td></tr>`; }).join("")
-    || `<tr><td colspan=13 class="muted">No cameras yet</td></tr>`;
+    || `<tr><td colspan=14 class="muted">No cameras yet</td></tr>`;
   $("#cameras").querySelectorAll(".camSel").forEach((cb) => (cb.onchange = () => { cb.checked ? camSelected.add(+cb.value) : camSelected.delete(+cb.value); camSelUi(); }));
   camSelUi();
   const n = (k) => cameras.filter((c) => c.status?.state === k).length, bad = cameras.filter((c) => ["offline", "auth", "path", "error"].includes(c.status?.state)).length;

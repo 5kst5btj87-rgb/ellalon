@@ -11,6 +11,7 @@ import html
 import logging
 import os
 import re
+from typing import Literal
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
@@ -20,6 +21,7 @@ from pydantic import BaseModel
 
 from .auth import require
 from .bus import bus
+from .camera_events import EVT_STATUS, supported_types
 from .db import Camera, SessionLocal
 
 router = APIRouter(prefix="/api")
@@ -42,7 +44,8 @@ BRANDS = {
     "rtsp": {"label": "Generic RTSP (custom path)", "custom": True},
 }
 STRUCT = ["brand", "ip", "port", "onvif_port", "username", "password", "channel",
-          "main_path", "sub_path", "use_substream", "storage_id"]
+          "main_path", "sub_path", "use_substream", "storage_id",
+          "events_enabled", "event_types", "events_alarm", "alarm_severity"]
 COPY_GROUPS = {
     "brand": ["brand", "port", "onvif_port", "main_path", "sub_path"],
     "credentials": ["username", "password"],
@@ -53,6 +56,7 @@ COPY_GROUPS = {
     "location": ["location"],
     "enabled": ["enabled"],
     "storage": ["storage_id"],
+    "events": ["events_enabled", "event_types", "events_alarm", "alarm_severity", "onvif_port"],
 }
 
 
@@ -73,6 +77,10 @@ class CamSettings(BaseModel):
     face_recognition: bool = False
     enabled: bool = True
     storage_id: str | None = None       # recording storage (None = default storage)
+    events_enabled: bool = False        # receive analytics events from the camera itself
+    event_types: list[str] = []         # empty = all event types
+    events_alarm: bool = True           # raise an alarm in the Alarm manager (else Events log only)
+    alarm_severity: Literal["warning", "high", "critical"] = "high"
 
 
 class CameraIn(CamSettings):
@@ -464,6 +472,7 @@ def cam_dict(c: Camera, reveal: bool = True) -> dict:
                                     "analytics", "face_recognition", "enabled")}
     d["settings"] = settings_of(c).model_dump(exclude={"name", "url", "substream_url"})
     d["status"] = CAM_STATUS.get(c.id, {"state": "checking", "detail": "first check in progress"})
+    d["events"] = EVT_STATUS.get(c.id) if (c.meta or {}).get("events_enabled") else None
     if not reveal:  # only admins and modules see credentials
         d["settings"]["password"] = ""
         d["url"], d["substream_url"] = _strip_creds(d["url"]), _strip_creds(d["substream_url"])
@@ -557,6 +566,16 @@ async def discover_cameras(body: DiscoverIn, _=Depends(require("admin"))):
     for d in res.get("devices", []):
         d["existing"] = known.get(d["ip"])
     return res
+
+
+@router.post("/cameras/events/probe")
+async def probe_events(body: CamSettings, _=Depends(require("admin"))):
+    """Which analytics events does this camera offer (and can we log in to its event service)?"""
+    if not body.ip.strip():
+        raise HTTPException(400, "Enter the camera IP address first")
+    s = body.model_dump()
+    s["ip"] = s["ip"].strip()
+    return await asyncio.wait_for(supported_types(s), 30)
 
 
 class BulkDeleteIn(BaseModel):
