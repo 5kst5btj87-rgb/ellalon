@@ -76,6 +76,7 @@ const APPS = [
   { id: "playback", name: "Playback", desc: "Recordings by camera and time", icon: I('<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/>'), color: "#ff8a3d" },
   { id: "cameras", name: "Cameras", desc: "Add, discover, analytics, events", icon: I('<rect x="3" y="7" width="13" height="10" rx="2"/><path d="m16 11 5-3v8l-5-3"/>'), color: "#34c77b",
     stat: () => cameras.length ? `${cameras.filter((c) => c.status?.state === "online").length} of ${cameras.length} online` : "" },
+  { id: "assistant", name: "AI Assistant", desc: "Ask, build rules and maps, reports, voice", icon: I('<path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z"/><path d="M18.5 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/><path d="M5 16l.6 1.4L7 18l-1.4.6L5 20l-.6-1.4L3 18l1.4-.6z"/>'), color: "#a78bfa" },
   { id: "analytics", name: "Analytics", desc: "Find people by clothes, colours, bags…", icon: I('<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5.5 5.5"/><circle cx="10.5" cy="8.5" r="1.8"/><path d="M7.5 13.5c.8-1.5 1.8-2 3-2s2.2.5 3 2"/>'), color: "#ff7a59" },
   { id: "maps", name: "Maps", desc: "Floor plans with live status", icon: I('<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>'), color: "#4cc38a",
     stat: () => typeof mapStat === "function" ? mapStat() : "" },
@@ -101,7 +102,7 @@ function show(tab) {
   $("#homeBtn").classList.toggle("active", tab === "home");
   renderTabs();
   if (tab === "home") renderHome();
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, analytics: loadAnalytics, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, analytics: loadAnalytics, assistant: loadAssistant, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 function renderTabs() {
   const pins = pinned();

@@ -11,6 +11,7 @@ Every client (web, Windows, mobile, 3rd-party) uses the same REST + WebSocket AP
 """
 import asyncio
 import logging
+from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -258,7 +259,7 @@ def get_spec(name: str):
 
 
 @app.get("/api/modules")
-async def list_modules(_=Depends(require("viewer"))):
+async def list_modules(_=Depends(require("viewer", allow_module=True))):
     return [await module_view(n) for n in registry.modules]
 
 
@@ -354,16 +355,22 @@ app.include_router(maps_router)
 # ---------------------------------------------------------------- events & C&C
 @app.get("/api/events")
 def list_events(limit: int = 100, source: str | None = None, type: str | None = None,
-                camera_id: int | None = None, _=Depends(require("viewer", allow_module=True))):
+                camera_id: int | None = None, since: datetime | None = None, until: datetime | None = None,
+                p=Depends(require("viewer", allow_module=True))):
+    cap = 20000 if p.get("role") == "module" else 1000      # modules build statistics and reports
     with SessionLocal() as s:
         q = s.query(Event)
+        if since:
+            q = q.filter(Event.ts >= since)
+        if until:
+            q = q.filter(Event.ts <= until)
         if source:
             q = q.filter(Event.source == source)
         if type:
             q = q.filter(Event.type == type)
         if camera_id:
             q = q.filter(Event.camera_id == camera_id)
-        return [event_dict(e) for e in q.order_by(Event.id.desc()).limit(min(limit, 1000))]
+        return [event_dict(e) for e in q.order_by(Event.id.desc()).limit(min(limit, cap))]
 
 
 class CommandIn(BaseModel):

@@ -58,7 +58,7 @@ def out(r: MapRow) -> dict:
 
 
 @router.get("/maps")
-def list_maps(_=Depends(require("viewer"))):
+def list_maps(_=Depends(require("viewer", allow_module=True))):
     with SessionLocal() as s:
         return [out(r) for r in s.query(MapRow).order_by(MapRow.position, MapRow.name)]
 

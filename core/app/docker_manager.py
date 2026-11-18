@@ -89,7 +89,7 @@ class DockerManager:
             labels.update({
                 "traefik.enable": "true",
                 f"traefik.http.routers.{r}.rule": f"PathPrefix(`/modules/{spec.name}`)",
-                f"traefik.http.routers.{r}.entrypoints": "web",
+                f"traefik.http.routers.{r}.entrypoints": "web,websecure",
                 f"traefik.http.routers.{r}.priority": "10",
                 f"traefik.http.routers.{r}.middlewares": f"ellalon-auth@docker,{r}-strip",
                 f"traefik.http.middlewares.{r}-strip.stripprefix.prefixes": f"/modules/{spec.name}",

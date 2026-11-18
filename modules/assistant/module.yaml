@@ -1,0 +1,12 @@
+name: assistant
+display_name: AI Assistant
+version: 0.1.0
+category: ai
+description: Ask in Hebrew or English - finds things in the system, builds rules and maps (with your approval), runs door/relay commands after approval, shows layouts, writes reports. Uses Claude (API key) or a local Ollama model - choose in the Assistant tab settings.
+image: ellalon/assistant:0.1.0
+autostart: true
+http_port: 8000
+volumes:
+  - host: data
+    container: /data
+capabilities: [assistant, reports]

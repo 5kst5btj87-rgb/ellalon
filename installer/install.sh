@@ -210,6 +210,7 @@ fi
 cat <<EOF
 
   Web UI         $URL
+  Secure (HTTPS) https://${IP:-localhost}/   (self-signed: accept the browser warning once; needed for voice)
   User           admin
   Password       ${ADMIN_PW:-unchanged (existing installation)}
   Program files  $DIR

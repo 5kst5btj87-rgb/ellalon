@@ -114,6 +114,39 @@
       <div id="ruleList" class="rules"></div>
     </div>
 
+    <div id="tab-assistant" class="tab hidden">
+      <div class="aiwrap">
+        <aside class="aiside">
+          <div class="card mapcard">
+            <div class="maphead"><b>Conversations</b><button id="aiNew" class="small">+ New</button></div>
+            <div id="aiChats" class="maplist"></div>
+          </div>
+          <div class="card mapcard">
+            <div class="maphead"><b>Reports</b></div>
+            <div id="aiReports" class="maplist"></div>
+          </div>
+          <button id="aiSettingsBtn" class="ghost small hidden">⚙ Assistant settings</button>
+        </aside>
+        <section class="aimain">
+          <div id="aiNotice" class="ainotice hidden"></div>
+          <div id="aiMsgs" class="aimsgs"></div>
+          <div id="aiBusy" class="aibusy hidden"><span class="dots"><i></i><i></i><i></i></span> <span id="aiStep"></span></div>
+          <div class="aiinput">
+            <div id="aiFiles" class="aifiles"></div>
+            <div class="airow">
+              <button id="aiAttach" class="iconbtn" title="Attach a PDF or picture (floor plan, device list...)">📎</button>
+              <textarea id="aiText" rows="2" dir="auto" placeholder="Ask anything, or tell me what to build… / שאל אותי כל דבר או בקש שאבנה משהו…"></textarea>
+              <button id="aiMic" class="iconbtn" title="Speak">🎤</button>
+              <button id="aiLang" class="ghost small" title="Voice language">עב</button>
+              <button id="aiSpeak" class="ghost small" title="Read answers aloud">🔇</button>
+              <button id="aiSend">Send</button>
+            </div>
+            <input type="file" id="aiFile" accept="application/pdf,image/png,image/jpeg" multiple class="hidden">
+          </div>
+        </section>
+      </div>
+    </div>
+
     <div id="tab-analytics" class="tab hidden">
       <div class="ansearch">
         <aside class="anfilters">
@@ -512,6 +545,31 @@
   <button type="button" class="ghost" data-close>Cancel</button> <button id="ruleSave">Save rule</button>
 </form></dialog>
 
+<dialog id="aiSetDialog"><form id="aiSetForm" method="dialog">
+  <h3>Assistant settings</h3>
+  <label class="inline"><input type="radio" name="provider" value="anthropic"> <b>Claude (Anthropic API)</b> - best quality, reads PDFs and floor plans; needs internet and an API key (paid per use)</label>
+  <div class="fgrid2 aiprov" data-p="anthropic">
+    <label>API key<input name="anthropic_key" type="password" autocomplete="off" placeholder="sk-ant-…"></label>
+    <label>Model<input name="anthropic_model" placeholder="claude-sonnet-5-5"></label>
+  </div>
+  <label class="inline"><input type="radio" name="provider" value="ollama"> <b>Local model (Ollama)</b> - runs on your own server, nothing leaves the site; needs a strong machine (GPU)</label>
+  <div class="fgrid2 aiprov" data-p="ollama">
+    <label>Ollama address<input name="ollama_url" placeholder="http://10.160.230.40:11434"></label>
+    <label>Model (with tools + vision)<input name="ollama_model" placeholder="qwen2.5vl:7b"></label>
+    <label>Context size<input name="ollama_ctx" type="number" min="4096" max="131072" step="1024"></label>
+  </div>
+  <label class="inline"><input type="radio" name="provider" value=""> Off</label>
+  <p class="muted small">With Claude, your questions and the system information the assistant looks up (camera names, events, attached files) are sent to Anthropic's API.
+    Nothing is ever changed without your approval: rules, maps and door/relay commands appear as cards with Approve / Reject.</p>
+  <p id="aiSetMsg" class="small"></p>
+  <button type="button" class="ghost" data-close>Close</button> <button type="button" id="aiSetTest" class="ghost">Test</button> <button type="button" id="aiSetSave">Save</button>
+</form></dialog>
+
+<dialog id="aiReport" class="xwide"><div class="reportbar"><button type="button" id="aiRepPrint">🖨 Print / save as PDF</button> <button type="button" id="aiRepDel" class="danger small">Delete</button> <span class="grow"></span><button type="button" class="ghost" id="aiRepClose">Close</button></div>
+  <article id="aiRepBody" class="report" dir="auto"></article></dialog>
+
+<dialog id="aiLive" class="wide"><form method="dialog"><h3 id="aiLiveTitle"></h3><div class="popvid" id="aiLiveVid"></div><button class="ghost">Close</button></form></dialog>
+
 <dialog id="asCamDialog"><form method="dialog">
   <h3>People tagging per camera</h3>
   <p class="muted small">Tagged cameras describe every person they see (man/woman, hair, hat, glasses, clothes, shoes, bag and colours) for the search in this tab.
@@ -554,5 +612,6 @@
 <script src="app.js"></script>
 <script src="maps.js"></script>
 <script src="analytics.js"></script>
+<script src="assistant.js"></script>
 </body>
 </html>
