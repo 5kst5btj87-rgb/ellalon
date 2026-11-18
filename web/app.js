@@ -68,6 +68,8 @@ async function start() {
 // ---------------------------------------------------------------- apps, tabs, home
 const I = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
 const APPS = [
+  { id: "dashboard", name: "Dashboard", desc: "Status of everything, charts, reports", icon: I('<rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/>'), color: "#22c3e6",
+    stat: () => typeof dbStat === "function" ? dbStat() : "" },
   { id: "wall", name: "Video wall", desc: "Live cameras, layouts, full screen", icon: I('<rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="7" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/><rect x="13" y="13" width="8" height="7" rx="1"/>'), color: "#3fa7ff" },
   { id: "incidents", name: "Alarm manager", desc: "Open alarms, acknowledge, close", icon: I('<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'), color: "#ff5b5b",
     stat: () => { const n = +($("#alarmBadge").textContent || 0); return n ? `${n} open` : "No open alarms"; } },
@@ -102,7 +104,7 @@ function show(tab) {
   $("#homeBtn").classList.toggle("active", tab === "home");
   renderTabs();
   if (tab === "home") renderHome();
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, analytics: loadAnalytics, assistant: loadAssistant, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, analytics: loadAnalytics, assistant: loadAssistant, dashboard: loadDashboard, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 function renderTabs() {
   const pins = pinned();
@@ -157,6 +159,7 @@ function connectWs() {
     if (data.type.startsWith("camera.") && !$("#tab-cameras").classList.contains("hidden")) loadCameras();
     if (data.source === "integrations" && !$("#tab-integrations").classList.contains("hidden")) refreshIntegrationsSoon();
     if (typeof mapOnEvent === "function") mapOnEvent(data);
+    if (typeof dbOnEvent === "function") dbOnEvent(data);
     if (data.type === "rule.notify") { alarmToast({ ...data, payload: { title: `${data.payload?.title || ""}${data.payload?.text && data.payload.text !== data.payload.title ? " - " + data.payload.text : ""}` } }, "Rule"); alarmBeep(); }
     if (data.type.startsWith("incident.")) {
       if (!$("#tab-incidents").classList.contains("hidden")) loadIncidents(); else refreshAlarmBadge();

@@ -114,6 +114,23 @@
       <div id="ruleList" class="rules"></div>
     </div>
 
+    <div id="tab-dashboard" class="tab hidden">
+      <div class="toolbar"><b class="maptitle">Dashboard</b><span id="dbUpdated" class="small muted"></span><span class="grow"></span>
+        <select id="dbRange"><option value="24">Last 24 hours</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select>
+        <button id="dbPrint" class="ghost small">🖨 Print</button><button id="dbAskReport" class="small">✨ Ask AI for a report</button></div>
+      <div id="dbKpis" class="kpis"></div>
+      <div class="dbgrid">
+        <div class="card dbwide"><div class="maphead"><b id="dbEvTitle">Events</b><span id="dbEvTotal" class="small muted"></span></div><div id="dbEvents"></div></div>
+        <div class="card"><div class="maphead"><b>Needs attention</b></div><div id="dbAttention"></div></div>
+        <div class="card"><div class="maphead"><b>Top event types</b></div><div id="dbTypes"></div></div>
+        <div class="card"><div class="maphead"><b>Busiest cameras</b></div><div id="dbCams"></div></div>
+        <div class="card"><div class="maphead"><b>Storage</b></div><div id="dbStorage"></div></div>
+        <div class="card"><div class="maphead"><b>Open alarms</b><a class="link small" onclick="show('incidents')">Alarm manager →</a></div><div id="dbAlarms"></div></div>
+        <div class="card"><div class="maphead"><b>System</b><a class="link small" onclick="show('modules')">System →</a></div><div id="dbModules"></div></div>
+        <div class="card"><div class="maphead"><b>Reports</b><a class="link small" onclick="show('assistant')">AI Assistant →</a></div><div id="dbReports"></div></div>
+      </div>
+    </div>
+
     <div id="tab-assistant" class="tab hidden">
       <div class="aiwrap">
         <aside class="aiside">
@@ -613,5 +630,6 @@
 <script src="maps.js"></script>
 <script src="analytics.js"></script>
 <script src="assistant.js"></script>
+<script src="dashboard.js"></script>
 </body>
 </html>

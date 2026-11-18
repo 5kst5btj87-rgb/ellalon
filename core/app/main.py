@@ -373,6 +373,46 @@ def list_events(limit: int = 100, source: str | None = None, type: str | None = 
         return [event_dict(e) for e in q.order_by(Event.id.desc()).limit(min(limit, cap))]
 
 
+@app.get("/api/events/stats")
+def event_stats(group: str = "hour", since: datetime | None = None, until: datetime | None = None, tz: str = "UTC",
+                type: str | None = None, min_severity: str | None = None, top: int = 20,
+                _=Depends(require("viewer", allow_module=True))):
+    """Counts of events for dashboards: by hour/day (in the viewer's time zone), type, camera, severity or source."""
+    from zoneinfo import ZoneInfo
+    from sqlalchemy import func
+    try:
+        ZoneInfo(tz)
+    except Exception:
+        tz = "UTC"
+    sev_order = ["info", "low", "warning", "high", "critical"]
+    with SessionLocal() as s:
+        if group in ("hour", "day"):
+            key = func.date_trunc(group, func.timezone(tz, Event.ts))
+        elif group in ("type", "camera_id", "severity", "source"):
+            key = getattr(Event, group)
+        else:
+            raise HTTPException(400, "group must be hour, day, type, camera_id, severity or source")
+        q = s.query(key.label("k"), Event.severity, func.count(Event.id))
+        if since:
+            q = q.filter(Event.ts >= since)
+        if until:
+            q = q.filter(Event.ts <= until)
+        if type:
+            q = q.filter(Event.type.like(type.replace("*", "%")))
+        if min_severity in sev_order:
+            q = q.filter(Event.severity.in_(sev_order[sev_order.index(min_severity):]))
+        rows = q.group_by("k", Event.severity).all()
+    out: dict = {}
+    for k, sev, n in rows:
+        k = k.isoformat() if hasattr(k, "isoformat") else k
+        o = out.setdefault(k, {"key": k, "total": 0, "by_severity": {}})
+        o["total"] += n
+        o["by_severity"][sev] = o["by_severity"].get(sev, 0) + n
+    res = sorted(out.values(), key=lambda o: o["key"] or "") if group in ("hour", "day") else \
+        sorted(out.values(), key=lambda o: -o["total"])[:max(1, min(top, 100))]
+    return {"group": group, "tz": tz, "rows": res, "total": sum(o["total"] for o in out.values())}
+
+
 class CommandIn(BaseModel):
     command: str
     args: dict = {}
