@@ -225,9 +225,12 @@ def create_user(body: UserIn, _=Depends(require("admin"))):
 
 
 # ---------------------------------------------------------------- system / modules
+BUILD = (Path(__file__).with_name("BUILD").read_text().strip() if Path(__file__).with_name("BUILD").is_file() else "")
+
+
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": settings.version}
+    return {"status": "ok", "version": settings.version, "build": BUILD}
 
 
 async def module_view(name: str) -> dict:

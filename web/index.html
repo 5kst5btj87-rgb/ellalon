@@ -20,7 +20,7 @@
 
 <section id="shell" class="hidden">
   <header>
-    <b class="brand">ELLALON</b>
+    <b class="brand" id="brand" title="">ELLALON</b>
     <nav>
       <a data-tab="wall" class="active">Video wall</a>
       <a data-tab="incidents">Alarm manager <span id="alarmBadge" class="badge hidden"></span></a>
@@ -265,6 +265,7 @@
     <label class="st-remote">Extra mount options (advanced)<input name="options" placeholder="e.g. vers=2.1"></label>
     <label>Keep recordings (days)<input name="retention_days" type="number" min="1" value="30"></label>
     <label>Always keep free (GB)<input name="min_free_gb" type="number" min="0" step="1" value="20"></label>
+    <label title="When recordings in this storage reach this size, the oldest are deleted. 0 = no limit (use the whole disk).">Reserved for recordings (GB, 0 = no limit)<input name="max_gb" type="number" min="0" step="1" value="0"></label>
   </div>
   <div class="checks"><label><input type="checkbox" name="enabled" checked> Enabled</label></div>
   <p class="muted small" id="stHelp"></p>

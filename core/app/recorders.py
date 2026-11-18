@@ -123,7 +123,8 @@ def recorder_config(sid: str, x=Depends(recorder_auth)):
         cams = [{"id": c.id, "name": c.name, "url": c.url} for c in s.query(Camera).order_by(Camera.id)
                 if c.enabled and c.record and (c.meta or {}).get("storage_id") == sid]
     return {"name": x["name"], "path": x["config"].get("path", ""), "retention_days": x["retention_days"],
-            "min_free_gb": x["min_free_gb"], "cameras": cams if x["enabled"] else []}
+            "min_free_gb": x["min_free_gb"], "max_gb": float(x["config"].get("max_gb") or 0),
+            "cameras": cams if x["enabled"] else []}
 
 
 @router.post("/recorders/{sid}/status")

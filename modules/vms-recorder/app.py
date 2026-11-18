@@ -55,6 +55,7 @@ class Recorder:
         self.task: asyncio.Task | None = None
         self.restarts = 0
         self.last_error = ""
+        self.audio = True          # set to False if this camera's audio cannot be recorded
 
     @property
     def id(self):
@@ -67,7 +68,9 @@ class Recorder:
         if self.cam["url"].startswith("rtsp"):
             args += ["-rtsp_transport", "tcp", "-timeout", "10000000"]
         return args + [
-            "-i", self.cam["url"], "-map", "0:v", "-map", "0:a?", "-c", "copy",
+            "-i", self.cam["url"], "-map", "0:v", *(["-map", "0:a?"] if self.audio else []),
+            # video untouched; audio (often G.711, which MP4 cannot hold) converted to AAC
+            "-c:v", "copy", *(["-c:a", "aac", "-b:a", "64k"] if self.audio else []),
             "-f", "segment", "-segment_time", str(SEGMENT), "-segment_atclocktime", "1",
             "-reset_timestamps", "1", "-strftime", "1", "-segment_format", "mp4",
             "-segment_format_options", "movflags=+frag_keyframe+empty_moov:flush_packets=1",
@@ -86,8 +89,16 @@ class Recorder:
             await m.publish("recording.started", {"camera": self.cam["name"], "storage": self.sid},
                             camera_id=self.id)
             _, err = await self.proc.communicate()
-            self.last_error = (err or b"").decode(errors="replace")[-500:]
+            self.last_error = ((err or b"").decode(errors="replace").strip()[-500:]
+                               or f"ffmpeg stopped (exit code {self.proc.returncode})")
             self.restarts += 1
+            quick = time.time() - started < 30
+            if quick:
+                drop_empty(ROOT / self.sid / str(self.id), started)
+            if quick and self.audio and any(h in self.last_error.lower() for h in AUDIO_HINTS):
+                self.audio = False
+                self.last_error += " - recording video only from now on"
+                m.log.warning("camera %s: audio cannot be recorded, video only", self.id)
             await m.publish("recording.stopped", {"camera": self.cam["name"], "error": self.last_error},
                             "warning", camera_id=self.id)
             # back off if the camera keeps failing quickly
@@ -181,30 +192,63 @@ def _writable(root: Path) -> bool:
         return False
 
 
+def apply_retention(root: Path, st: dict) -> dict:
+    """Delete recordings that are too old, failed (empty) files, and the oldest ones while the disk is
+    below 'keep free' or the folder is over its reserved size. Returns usage numbers."""
+    files = []
+    for f in root.glob("*/*.mp4"):
+        try:
+            s = f.stat()
+            files.append((s.st_mtime, s.st_size, f))
+        except OSError:
+            pass
+    files.sort(key=lambda x: x[0])
+    now = time.time()
+    cutoff = now - float(st.get("retention_days") or 30) * 86400
+    min_free = float(st.get("min_free_gb") or 0) * 1e9
+    max_bytes = float(st.get("max_gb") or 0) * 1e9
+    total, free = sum(x[1] for x in files), shutil.disk_usage(root).free
+    left = []
+    for mtime, size, f in files:
+        drop = (mtime < cutoff
+                or (size < 1024 and mtime < now - 600)                      # failed / empty attempts
+                or (max_bytes and total > max_bytes and mtime < now - 600)  # over the reserved size
+                or (free < min_free and mtime < now - 3600))                # disk nearly full
+        if drop:
+            try:
+                f.unlink()
+                total, free = total - size, free + size
+                continue
+            except OSError:
+                pass
+        left.append((mtime, size, f))
+    du = shutil.disk_usage(root)
+    return {"total_gb": round(du.total / 1e9, 1), "free_gb": round(du.free / 1e9, 1),
+            "recordings_gb": round(total / 1e9, 2), "max_gb": float(st.get("max_gb") or 0),
+            "files": len(left),
+            "oldest": datetime.fromtimestamp(left[0][0], timezone.utc).isoformat() if left else None}
+
+
+def drop_empty(folder: Path, since: float):
+    """Remove the 0-byte files a failed recording attempt leaves behind."""
+    try:
+        for f in folder.glob("*.mp4"):
+            s = f.stat()
+            if s.st_size < 1024 and s.st_mtime >= since - 2:
+                f.unlink()
+    except OSError:
+        pass
+
+
+AUDIO_HINTS = ("audio", "codec", "could not write header", "not currently supported", "tag", "sample rate", "aac")
+
+
 def clean_storage(sid: str, st: dict) -> dict:
     """Apply retention to one storage and return its usage numbers."""
     root = ROOT / sid
     if not root.is_dir():
         return {"mounted": False}
-    files = sorted(root.glob("*/*.mp4"), key=lambda p: p.stat().st_mtime)
-    cutoff = time.time() - float(st.get("retention_days", 30)) * 86400
-    min_free = float(st.get("min_free_gb", 20))
-    protect = time.time() - 3600                       # never free space by deleting the last hour
-    for f in files:
-        try:
-            mtime = f.stat().st_mtime
-            if mtime < cutoff or (shutil.disk_usage(root).free / 1e9 < min_free and mtime < protect):
-                f.unlink(missing_ok=True)
-            else:
-                break
-        except OSError:
-            pass
-    left = [f for f in files if f.exists()]
-    du = shutil.disk_usage(root)
-    oldest = datetime.fromtimestamp(left[0].stat().st_mtime, timezone.utc).isoformat() if left else None
-    return {"mounted": True, "writable": _writable(root), "total_gb": round(du.total / 1e9, 1),
-            "free_gb": round(du.free / 1e9, 1), "recordings_gb": round(sum(f.stat().st_size for f in left) / 1e9, 2),
-            "files": len(left), "oldest": oldest}
+    return {"mounted": True, "writable": _writable(root), **apply_retention(root, st)}
 
 
 @m.background
@@ -227,7 +271,7 @@ async def storage_stats():
     out = {}
     for sid in storages:
         s = dict(stats.get(sid) or ({"mounted": True, **await asyncio.to_thread(clean_storage, sid, {
-            "retention_days": 10 ** 6, "min_free_gb": 0})} if mounted(sid) else {"mounted": False}))
+            "retention_days": 10 ** 6, "min_free_gb": 0, "max_gb": 0})} if mounted(sid) else {"mounted": False}))
         s["cameras"] = sum(1 for r in recorders.values() if r.sid == sid)
         out[sid] = s
     return out

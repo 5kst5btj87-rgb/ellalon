@@ -39,6 +39,7 @@ class StorageIn(BaseModel):
     options: str = ""         # extra mount options (advanced)
     retention_days: int = 30
     min_free_gb: float = 20
+    max_gb: float = 0         # space reserved for recordings (0 = no limit)
     enabled: bool = True
 
 
@@ -52,7 +53,7 @@ def validate(b: StorageIn) -> StorageIn:
     b.name = b.name.strip()
     if not b.name:
         raise HTTPException(400, "Enter a name")
-    if b.retention_days < 1 or b.min_free_gb < 0:
+    if b.retention_days < 1 or b.min_free_gb < 0 or b.max_gb < 0:
         raise HTTPException(400, "Days must be at least 1 and free space cannot be negative")
     if b.type == "recorder":            # folder is on the recorder machine (empty = its default)
         b.path = b.path.strip()
@@ -99,6 +100,7 @@ def mount_options(st: dict) -> dict:
 def as_dict(s: Storage) -> dict:
     return {"id": s.id, "name": s.name, "type": s.type, **{k: (s.config or {}).get(k, "") for k in CONFIG_KEYS},
             "retention_days": s.retention_days, "min_free_gb": s.min_free_gb,
+            "max_gb": float((s.config or {}).get("max_gb") or 0),
             "is_default": s.is_default, "enabled": s.enabled}
 
 
@@ -176,6 +178,7 @@ async def add_storage(body: StorageIn, _=Depends(require("admin"))):
         cfg = {k: getattr(b, k) for k in CONFIG_KEYS}
         if b.type == "recorder":
             cfg = with_new_code({"path": b.path})
+        cfg["max_gb"] = b.max_gb
         s.add(Storage(id=sid, name=b.name, type=b.type, enabled=b.enabled, is_default=False,
                       retention_days=b.retention_days, min_free_gb=b.min_free_gb, config=cfg))
         s.commit()
@@ -198,6 +201,7 @@ async def update_storage(sid: str, body: StorageIn, _=Depends(require("admin")))
         cfg = {**(x.config or {}), **{k: getattr(b, k) for k in CONFIG_KEYS}}
         if not b.password:
             cfg["password"] = (x.config or {}).get("password", "")
+        cfg["max_gb"] = b.max_gb
         x.name, x.type, x.enabled, x.config = b.name, b.type, b.enabled, cfg
         x.retention_days, x.min_free_gb = b.retention_days, b.min_free_gb
         s.commit()

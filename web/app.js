@@ -38,6 +38,9 @@ async function start() {
   try { me = await api("/api/auth/me"); } catch { return logout(); }
   $("#login").classList.add("hidden"); $("#shell").classList.remove("hidden");
   $("#who").textContent = `${me.sub} (${me.role})`;
+  fetch("/api/health").then((r) => r.json()).then((h) => {
+    $("#brand").innerHTML = `ELLALON <span class="build">${esc(h.build || h.version)}</span>`; $("#brand").title = `Version ${h.version}, build ${h.build}`;
+  }).catch(() => {});
   cameras = await api("/api/cameras");
   connectWs(); renderWall(); renderWallSide(); loadLayouts(); refreshAlarmBadge(); show("wall");
 }
@@ -81,14 +84,19 @@ async function loadEvents() { $("#events").innerHTML = (await api("/api/events?l
 // moving one camera never restarts the others.
 let wallLayout = localStorage.getItem("ellalon_wall_layout") || "", wallLayouts = [];
 $("#grid").value = localStorage.getItem("ellalon_wall_grid") || "2";
-$("#grid").onchange = wallChanged;
+$("#grid").onchange = () => { wallFocus = null; wallChanged(); };
 const wallN = () => +$("#grid").value;
-const tileSrc = (cam, n) => `/modules/streaming/stream.html?src=cam_${cam.id}${cam.substream_url && n > 2 ? "_sub" : ""}&mode=webrtc,mse`;
+// split screen = substream (light), single / full screen = main stream (full quality)
+const tileSrc = (cam, n, main) => `/modules/streaming/stream.html?src=cam_${cam.id}${cam.substream_url && n > 1 && !main ? "_sub" : ""}&mode=webrtc,mse`;
+let wallFocus = null;      // index of the tile shown full screen, or null
 const wallNow = () => Array.from({ length: wallN() ** 2 }, (_, i) => (cameras.some((c) => c.id === wallTiles[i]) ? wallTiles[i] : null));
 
 function renderWall() {
   const n = wallN(), wall = $("#wall");
-  wall.style.gridTemplateColumns = `repeat(${n},1fr)`; wall.style.gridTemplateRows = `repeat(${n},1fr)`;
+  if (wallFocus !== null && !cameras.some((c) => c.id === wallTiles[wallFocus])) wallFocus = null;
+  const f = wallFocus !== null;
+  wall.classList.toggle("focus", f);
+  wall.style.gridTemplateColumns = f ? "1fr" : `repeat(${n},1fr)`; wall.style.gridTemplateRows = f ? "1fr" : `repeat(${n},1fr)`;
   while (wall.children.length > n * n) wall.lastElementChild.remove();
   while (wall.children.length < n * n) wall.appendChild(makeTile());
   [...wall.children].forEach((t, i) => updateTile(t, i, n));
@@ -98,7 +106,15 @@ function makeTile() {
   t.className = "tile empty"; t.draggable = true;
   t.innerHTML = `<div class="tvid"></div><span class="label hidden"></span><button type="button" class="tclose hidden" title="Remove from wall">×</button>
     <span class="thint">+ camera<br><small>drag from the list or click</small></span>`;
-  t.onclick = () => pickCamera(+t.dataset.i);
+  let clickTimer;
+  t.onclick = () => {           // wait a moment: a double-click must not open the camera list
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => { if (wallFocus === null) pickCamera(+t.dataset.i); }, 260);
+  };
+  t.ondblclick = (e) => {
+    e.preventDefault(); clearTimeout(clickTimer);
+    if (wallFocus === null && t.dataset.cam) focusTile(+t.dataset.i); else unfocusWall();
+  };
   t.querySelector(".tclose").onclick = (e) => { e.stopPropagation(); setTile(+t.dataset.i, null); };
   t.ondragstart = (e) => {
     if (!t.dataset.cam) return e.preventDefault();
@@ -117,8 +133,20 @@ function makeTile() {
   };
   return t;
 }
+function focusTile(i) {
+  wallFocus = i; renderWall();
+  const w = $("#tab-wall");                       // fill the monitor
+  if (!document.fullscreenElement && w.requestFullscreen) w.requestFullscreen().catch(() => {});
+}
+function unfocusWall() {
+  wallFocus = null; renderWall();
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement && wallFocus !== null) unfocusWall(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && wallFocus !== null) unfocusWall(); });
 function updateTile(t, i, n) {
-  const cam = cameras.find((c) => c.id === wallTiles[i]), src = cam ? tileSrc(cam, n) : "";
+  const cam = cameras.find((c) => c.id === wallTiles[i]), src = cam ? tileSrc(cam, n, wallFocus === i || n === 1) : "";
+  t.classList.toggle("hidden", wallFocus !== null && wallFocus !== i);   // others keep playing, hidden
   t.dataset.i = i; t.dataset.cam = cam ? cam.id : "";
   t.classList.toggle("empty", !cam);
   if ((t.dataset.src || "") !== src) {          // only this tile reconnects
@@ -145,6 +173,7 @@ function pickCamera(i) {
   d.onclose = () => { if (d.returnValue !== "cancel") setTile(i, d.returnValue === "clear" ? null : +d.returnValue); };
 }
 function applyWall(layout, name) {
+  wallFocus = null;
   $("#grid").value = String(Math.min(6, Math.max(1, layout.cols || 2)));
   wallTiles = [...(layout.tiles || [])];
   if (name !== undefined) { wallLayout = name; localStorage.setItem("ellalon_wall_layout", name); }
@@ -909,7 +938,7 @@ async function loadStorageTab() {
   $("#stAdd").classList.toggle("hidden", !admin);
   $("#stList").innerHTML = storages.map((s) => {
     if (s.type === "recorder") return recorderCard(s, admin);
-    const x = stat[s.id] || {}, used = x.total_gb ? 100 - (x.free_gb / x.total_gb) * 100 : 0;
+    const x = stat[s.id] || {}, used = s.max_gb ? Math.min(100, ((x.recordings_gb || 0) / s.max_gb) * 100) : x.total_gb ? 100 - (x.free_gb / x.total_gb) * 100 : 0;
     const st = !s.enabled ? ["", "Disabled"] : s.mount_error || x.mounted === false ? ["bad", "Not connected"]
       : x.writable === false ? ["bad", "Cannot write"] : x.mounted ? ["ok", "Connected"] : ["wait", "Checking…"];
     return `<div class="card mod">
@@ -917,24 +946,29 @@ async function loadStorageTab() {
       <div class="muted">${ST_TYPE[s.type] || s.type} · ${esc(s.location)}</div>
       ${s.mount_error ? `<p class="err small">${esc(s.mount_error)}</p>` : ""}
       ${x.total_gb ? `<div class="bar"><span class="${used > 90 ? "full" : ""}" style="width:${used.toFixed(0)}%"></span></div>
-        <div class="small muted">${gb(x.free_gb)} free of ${gb(x.total_gb)} · recordings ${gb(x.recordings_gb || 0)}${x.oldest ? " · oldest " + new Date(x.oldest).toLocaleDateString() : ""}</div>` : ""}
-      <p class="small">${st[1]} · ${s.cameras} camera(s) · keep ${s.retention_days} days · keep ${s.min_free_gb} GB free</p>
+        <div class="small muted">${reservedLine(s, x)}${x.oldest ? " · oldest " + new Date(x.oldest).toLocaleDateString() : ""}</div>` : ""}
+      <p class="small">${st[1]} · ${s.cameras} camera(s) · keep ${s.retention_days} days · keep ${s.min_free_gb} GB free${s.max_gb ? ` · ${gb(s.max_gb)} reserved` : ""}</p>
       ${admin ? `<div class="actions"><button class="ghost" onclick="stEdit('${s.id}')">Edit</button>
         ${s.is_default ? "" : `<button class="ghost" onclick="stDefault('${s.id}')">Make default</button> <button class="danger" onclick="stDelete('${s.id}')">Delete</button>`}</div>` : ""}
     </div>`;
   }).join("");
 }
+function reservedLine(s, x) {
+  if (!s.max_gb) return `${gb(x.free_gb)} free of ${gb(x.total_gb)} · recordings ${gb(x.recordings_gb || 0)}`;
+  const warn = x.total_gb && s.max_gb > (x.recordings_gb || 0) + x.free_gb ? ` · <span class="err">only ${gb((x.recordings_gb || 0) + x.free_gb)} available on the disk</span>` : "";
+  return `recordings ${gb(x.recordings_gb || 0)} of ${gb(s.max_gb)} reserved · disk ${gb(x.free_gb)} free of ${gb(x.total_gb)}${warn}`;
+}
 function recorderCard(s, admin) {
   const r = s.recorder || {}, cams = Object.entries(r.cameras || {}), d = r.disk || {};
-  const used = d.total_gb ? 100 - (d.free_gb / d.total_gb) * 100 : 0;
+  const used = s.max_gb ? Math.min(100, ((d.recordings_gb || 0) / s.max_gb) * 100) : d.total_gb ? 100 - (d.free_gb / d.total_gb) * 100 : 0;
   const rec = cams.filter(([, c]) => c.state === "recording").length, bad = cams.filter(([, c]) => c.state === "failing");
   const st = !r.registered ? ["wait", "Not installed yet"] : r.online ? ["ok", "Online"] : ["bad", "Offline (keeps recording on its own)"];
   return `<div class="card mod">
     <h3><span class="dot ${st[0]}"></span> ${esc(s.name)} <span class="sev">recording server</span></h3>
     <div class="muted">${r.registered ? `${esc(r.hostname)} · ${esc(r.address)} · ${esc(r.os)} · v${esc(r.version)}` : "Waiting for installation"}</div>
     ${d.total_gb ? `<div class="bar"><span class="${used > 90 ? "full" : ""}" style="width:${used.toFixed(0)}%"></span></div>
-      <div class="small muted">${gb(d.free_gb)} free of ${gb(d.total_gb)} · recordings ${gb(d.recordings_gb || 0)}${d.oldest ? " · oldest " + new Date(d.oldest).toLocaleDateString() : ""} · ${esc(r.folder || "")}</div>` : ""}
-    <p class="small">${st[1]}${r.last_seen && !r.online && r.registered ? " · last seen " + new Date(r.last_seen).toLocaleString() : ""} · ${r.online ? `${rec} of ${cams.length} camera(s) recording` : `${s.cameras} camera(s) assigned`} · keep ${s.retention_days} days · keep ${s.min_free_gb} GB free</p>
+      <div class="small muted">${reservedLine(s, d)}${d.oldest ? " · oldest " + new Date(d.oldest).toLocaleDateString() : ""} · ${esc(r.folder || "")}</div>` : ""}
+    <p class="small">${st[1]}${r.last_seen && !r.online && r.registered ? " · last seen " + new Date(r.last_seen).toLocaleString() : ""} · ${r.online ? `${rec} of ${cams.length} camera(s) recording` : `${s.cameras} camera(s) assigned`} · keep ${s.retention_days} days · keep ${s.min_free_gb} GB free${s.max_gb ? ` · ${gb(s.max_gb)} reserved` : ""}</p>
     ${bad.length ? `<ul class="camlist">${bad.map(([, c]) => `<li class="bad">${esc(c.name)}: ${esc((c.error || "not recording").split("\n").pop())}</li>`).join("")}</ul>` : ""}
     ${admin ? `<div class="actions"><button class="ghost" onclick="stEdit('${s.id}')">Edit</button>
       <button class="ghost" onclick="recInstall('${s.id}')">${r.registered ? "Reinstall / move" : "Install commands"}</button>
@@ -984,6 +1018,7 @@ function stBody() {
   for (const k of ST_FIELDS) b[k] = el(f, k).value.trim();
   b.retention_days = +el(f, "retention_days").value || 30;
   b.min_free_gb = +el(f, "min_free_gb").value || 0;
+  b.max_gb = Math.max(0, +el(f, "max_gb").value || 0);
   b.enabled = el(f, "enabled").checked;
   return b;
 }
@@ -995,7 +1030,7 @@ window.stEdit = (id) => {
   const s = storages.find((x) => x.id === id), f = $("#stForm"); stEditing = s; f.reset();
   for (const k of ST_FIELDS) if (s[k] != null) el(f, k).value = s[k];
   el(f, "password").value = ""; el(f, "password").placeholder = s.has_password ? "(unchanged)" : "";
-  el(f, "retention_days").value = s.retention_days; el(f, "min_free_gb").value = s.min_free_gb; el(f, "enabled").checked = s.enabled;
+  el(f, "retention_days").value = s.retention_days; el(f, "min_free_gb").value = s.min_free_gb; el(f, "max_gb").value = s.max_gb || 0; el(f, "enabled").checked = s.enabled;
   $("#stType").disabled = true;   // a storage keeps its type; add a new one to change it
   $("#stTitle").textContent = "Edit " + s.name; $("#stMsg").textContent = ""; stTypeUi(); $("#stDialog").showModal();
 };

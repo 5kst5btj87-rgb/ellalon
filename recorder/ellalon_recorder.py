@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 WINDOWS = os.name == "nt"
 HOME = (Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "EllalonRecorder" if WINDOWS
         else Path("/etc/ellalon-recorder"))
@@ -89,6 +89,7 @@ class CameraRecorder(threading.Thread):
         self.proc: subprocess.Popen | None = None
         self.proc_started = 0.0
         self.restarts, self.error = 0, ""
+        self.audio = True          # set to False if this camera's audio cannot be recorded
 
     @property
     def folder(self) -> Path:
@@ -98,7 +99,8 @@ class CameraRecorder(threading.Thread):
         cmd = [ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-nostdin"]
         if self.cam["url"].startswith("rtsp"):
             cmd += ["-rtsp_transport", "tcp", "-timeout", "10000000"]
-        return cmd + ["-i", self.cam["url"], "-map", "0:v", "-map", "0:a?", "-c", "copy",
+        return cmd + ["-i", self.cam["url"], "-map", "0:v", *(["-map", "0:a?"] if self.audio else []),
+                      "-c:v", "copy", *(["-c:a", "aac", "-b:a", "64k"] if self.audio else []),
                       "-f", "segment", "-segment_time", str(SEGMENT), "-segment_atclocktime", "1",
                       "-reset_timestamps", "1", "-strftime", "1", "-segment_format", "mp4",
                       "-segment_format_options", "movflags=+frag_keyframe+empty_moov:flush_packets=1",
@@ -122,6 +124,11 @@ class CameraRecorder(threading.Thread):
             if self.stop_evt.is_set():
                 break
             self.restarts += 1
+            if time.time() - t0 < 30:
+                drop_empty(self.folder, t0)
+                if self.audio and any(h in self.error.lower() for h in AUDIO_HINTS):
+                    self.audio = False
+                    self.error += " - recording video only from now on"
             backoff = 5 if time.time() - t0 > 60 else min(60, backoff * 2)
             log.warning("camera %s (%s): %s - retrying in %ss", self.cam["id"], self.cam.get("name"),
                         self.error.splitlines()[-1] if self.error else "stopped", backoff)
@@ -209,7 +216,8 @@ class Agent:
             log.info("connected to the management server %s", server)
         self.online, self.last_error, self.last_sync = True, "", time.time()
         fresh = {"cameras": conf.get("cameras", []), "path": conf.get("path") or "", "name": conf.get("name"),
-                 "retention_days": conf.get("retention_days", 30), "min_free_gb": conf.get("min_free_gb", 20)}
+                 "retention_days": conf.get("retention_days", 30), "min_free_gb": conf.get("min_free_gb", 20),
+                 "max_gb": conf.get("max_gb", 0)}
         if any(self.cfg.get(k) != v for k, v in fresh.items()):
             self.cfg.update(fresh)
             save(self.cfg, self.cfg_path)
@@ -226,26 +234,8 @@ class Agent:
         self.online, self.last_error = False, why
 
     def retention(self):
-        root = self.root
-        if not root.is_dir():
-            return
-        files = sorted(root.glob("*/*.mp4"), key=lambda p: p.stat().st_mtime)
-        cutoff = time.time() - float(self.cfg.get("retention_days", 30)) * 86400
-        min_free, protect = float(self.cfg.get("min_free_gb", 20)), time.time() - 3600
-        for f in files:
-            try:
-                mtime = f.stat().st_mtime
-                if mtime < cutoff or (shutil.disk_usage(root).free / 1e9 < min_free and mtime < protect):
-                    f.unlink()
-                else:
-                    break
-            except OSError:
-                pass
-        left = [f for f in files if f.exists()]
-        du = shutil.disk_usage(root)
-        self.disk = {"total_gb": round(du.total / 1e9, 1), "free_gb": round(du.free / 1e9, 1),
-                     "recordings_gb": round(sum(f.stat().st_size for f in left) / 1e9, 2),
-                     "files": len(left), "oldest": iso(left[0].stat().st_mtime) if left else None}
+        if self.root.is_dir():
+            self.disk = apply_retention(self.root, self.cfg)
 
     def status(self) -> dict:
         with self.lock:
@@ -333,6 +323,57 @@ def cut_clip(dirs, seconds, end_ts=None, ffmpeg="ffmpeg", segment=300, workdir=N
         tmp.rmdir()
         raise NoRecording("Could not cut the clip: " + (r.stderr.decode(errors="replace").strip()[-200:] or "empty result"))
     return out
+
+
+def apply_retention(root: Path, st: dict) -> dict:
+    """Delete recordings that are too old, failed (empty) files, and the oldest ones while the disk is
+    below 'keep free' or the folder is over its reserved size. Returns usage numbers."""
+    files = []
+    for f in root.glob("*/*.mp4"):
+        try:
+            s = f.stat()
+            files.append((s.st_mtime, s.st_size, f))
+        except OSError:
+            pass
+    files.sort(key=lambda x: x[0])
+    now = time.time()
+    cutoff = now - float(st.get("retention_days") or 30) * 86400
+    min_free = float(st.get("min_free_gb") or 0) * 1e9
+    max_bytes = float(st.get("max_gb") or 0) * 1e9
+    total, free = sum(x[1] for x in files), shutil.disk_usage(root).free
+    left = []
+    for mtime, size, f in files:
+        drop = (mtime < cutoff
+                or (size < 1024 and mtime < now - 600)                      # failed / empty attempts
+                or (max_bytes and total > max_bytes and mtime < now - 600)  # over the reserved size
+                or (free < min_free and mtime < now - 3600))                # disk nearly full
+        if drop:
+            try:
+                f.unlink()
+                total, free = total - size, free + size
+                continue
+            except OSError:
+                pass
+        left.append((mtime, size, f))
+    du = shutil.disk_usage(root)
+    return {"total_gb": round(du.total / 1e9, 1), "free_gb": round(du.free / 1e9, 1),
+            "recordings_gb": round(total / 1e9, 2), "max_gb": float(st.get("max_gb") or 0),
+            "files": len(left),
+            "oldest": iso(left[0][0]) if left else None}
+
+
+def drop_empty(folder: Path, since: float):
+    """Remove the 0-byte files a failed recording attempt leaves behind."""
+    try:
+        for f in folder.glob("*.mp4"):
+            s = f.stat()
+            if s.st_size < 1024 and s.st_mtime >= since - 2:
+                f.unlink()
+    except OSError:
+        pass
+
+
+AUDIO_HINTS = ("audio", "codec", "could not write header", "not currently supported", "tag", "sample rate", "aac")
 
 
 # ---------------------------------------------------------------- playback server
