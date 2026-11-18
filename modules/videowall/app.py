@@ -52,6 +52,15 @@ state = load()
 
 
 # ---------------------------------------------------------------- go2rtc sync
+def sources(url: str) -> list[tuple[str, str]]:
+    """go2rtc sources for one camera stream, tried in order:
+    1. direct RTSP without the two-way-audio request (some NVRs then return no tracks at all)
+    2. through ffmpeg, which copes with unusual streams (audio converted to AAC for browsers)"""
+    if not url.startswith("rtsp"):
+        return [("src", url)]
+    return [("src", url + "#backchannel=0"), ("src", f"ffmpeg:{url}#video=copy#audio=aac")]
+
+
 async def sync_streams():
     cams = [c for c in await m.cameras() if c["enabled"]]
     async with httpx.AsyncClient(base_url=GO2RTC, timeout=5) as c:
@@ -60,10 +69,10 @@ async def sync_streams():
         for cam in cams:
             name = f"cam_{cam['id']}"
             wanted.add(name)
-            await c.put("/api/streams", params={"name": name, "src": cam["url"]})
+            await c.put("/api/streams", params=[("name", name), *sources(cam["url"])])
             if cam.get("substream_url"):
                 wanted.add(name + "_sub")
-                await c.put("/api/streams", params={"name": name + "_sub", "src": cam["substream_url"]})
+                await c.put("/api/streams", params=[("name", name + "_sub"), *sources(cam["substream_url"])])
         for name in existing:
             if name.startswith("cam_") and name not in wanted:
                 await c.delete("/api/streams", params={"src": name})
