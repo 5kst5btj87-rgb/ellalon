@@ -435,3 +435,11 @@ table.mdt{border-collapse:collapse;width:100%;margin:8px 0 16px}table.mdt th,tab
   body{background:#fff!important;color:#111}.card,.kpi{box-shadow:none!important;background:#fff!important;border:1px solid #ccc!important;color:#111}
   .kpit,.kpis2,.muted,.hbl{color:#555!important}.dbgrid{grid-template-columns:1fr 1fr}.kpi.bad{animation:none}
 }
+#aiSetForm{display:grid;gap:8px;min-width:min(680px,90vw)}
+.aiopt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:12px;background:#0c1118;border:1px solid var(--line);cursor:pointer}
+.aiopt:has(input:checked){border-color:#a78bfa;box-shadow:0 0 0 2px #a78bfa33}
+.aiopt input{margin-top:3px}
+.aiprov{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 6px 26px}
+.aiprov label{display:grid;gap:4px;font-size:13px}.aiprov .span2{grid-column:1/-1}
+.aiprov details{font-size:13px}.aiprov .bar{height:8px;border-radius:5px;background:#0c1118;box-shadow:var(--sunken);overflow:hidden;margin-bottom:4px}
+.aiprov .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#a78bfa,#5b4bd6);transition:width .4s}

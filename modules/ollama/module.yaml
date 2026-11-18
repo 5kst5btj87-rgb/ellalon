@@ -1,0 +1,22 @@
+# Local AI engine for the AI Assistant (Ollama). Upstream image, nothing is built.
+# Uses the NVIDIA GPU when the server has one (with the NVIDIA container toolkit), otherwise the CPU (slow).
+# Models are downloaded from the Assistant settings ("Download model") and kept in the data folder.
+name: ollama
+display_name: Local AI (Ollama)
+version: latest
+category: ai
+description: Runs AI models on this server for the AI Assistant - nothing leaves the site. Needs a lot of memory (8 GB+ RAM for a 7B model) and ideally an NVIDIA GPU.
+image: ollama/ollama:latest
+autostart: false
+gpu: true
+env:
+  OLLAMA_HOST: "0.0.0.0:11434"
+  OLLAMA_KEEP_ALIVE: "30m"
+volumes:
+  - host: models
+    container: /root/.ollama
+health:
+  type: http
+  path: /
+  port: 11434
+capabilities: [llm]

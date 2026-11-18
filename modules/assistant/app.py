@@ -26,7 +26,7 @@ from ellalon_sdk import EllalonModule
 
 DATA = Path(os.environ.get("ASSISTANT_DATA", "/data"))
 MAX_STEPS = 14
-m = EllalonModule(version="0.1.0")
+m = EllalonModule(version="0.1.1")
 app = m.app
 
 
@@ -168,6 +168,68 @@ async def test_settings(request: Request):
     except llm.LLMError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "answer": text, "seconds": round(time.time() - t0, 1)}
+
+
+# ---------------------------------------------------------------- Ollama models
+pull_state: dict = {}
+
+
+def ollama_base() -> str:
+    return (store.settings().get("ollama_url") or llm.BUILTIN_OLLAMA).rstrip("/")
+
+
+@app.get("/ollama/models")
+async def ollama_models(request: Request):
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(ollama_base() + "/api/tags")
+            r.raise_for_status()
+            return {"reachable": True, "url": ollama_base(), "builtin": ollama_base() == llm.BUILTIN_OLLAMA,
+                    "models": [{"name": x["name"], "gb": round(x.get("size", 0) / 1e9, 1)} for x in r.json().get("models", [])],
+                    "pull": pull_state}
+    except Exception as e:
+        return {"reachable": False, "url": ollama_base(), "builtin": ollama_base() == llm.BUILTIN_OLLAMA,
+                "error": e.__class__.__name__, "models": [], "pull": pull_state}
+
+
+class PullIn(BaseModel):
+    model: str
+
+
+@app.post("/ollama/pull")
+async def ollama_pull(body: PullIn, request: Request):
+    """Download a model into Ollama (several GB - takes a while); progress in /ollama/models -> pull."""
+    need_admin(request)
+    if not re.fullmatch(r"[\w.\-/:]{2,80}", body.model):
+        raise HTTPException(400, "Unusual model name")
+    if pull_state.get("running"):
+        raise HTTPException(409, "A download is already running")
+    pull_state.clear()
+    pull_state.update(model=body.model, running=True, status="starting", pct=0, error="")
+
+    async def go():
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10)) as c:
+                async with c.stream("POST", ollama_base() + "/api/pull", json={"model": body.model, "stream": True}) as r:
+                    async for line in r.aiter_lines():
+                        try:
+                            d = json.loads(line)
+                        except ValueError:
+                            continue
+                        if d.get("error"):
+                            pull_state["error"] = d["error"]
+                        pull_state["status"] = d.get("status", pull_state["status"])
+                        if d.get("total"):
+                            pull_state["pct"] = round(100 * d.get("completed", 0) / d["total"], 1)
+        except Exception as e:
+            pull_state["error"] = f"{e.__class__.__name__}: {str(e)[:200]}"
+        pull_state["running"] = False
+        if not pull_state["error"]:
+            pull_state["status"], pull_state["pct"] = "done", 100
+    asyncio.create_task(go())
+    return pull_state
 
 
 # ---------------------------------------------------------------- attachments

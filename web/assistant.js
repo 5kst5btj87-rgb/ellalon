@@ -301,6 +301,7 @@ window.aiSay = (text) => {
 };
 
 // ---- settings (admins)
+let aiOlT = null;
 window.aiOpenSettings = async () => {
   const f = $("#aiSetForm"), s = aiSettings || (await amod("/settings").catch(() => ({})));
   f.querySelectorAll('input[name="provider"]').forEach((r) => (r.checked = r.value === (s.provider || "")));
@@ -309,8 +310,46 @@ window.aiOpenSettings = async () => {
   $("#aiSetMsg").textContent = ""; aiProvUi(); $("#aiSetDialog").showModal();
 };
 $("#aiSettingsBtn").onclick = aiOpenSettings;
-function aiProvUi() { const p = $("#aiSetForm").querySelector('input[name="provider"]:checked')?.value || ""; document.querySelectorAll(".aiprov").forEach((d) => d.classList.toggle("hidden", d.dataset.p !== p)); }
+function aiProvUi() {
+  const p = $("#aiSetForm").querySelector('input[name="provider"]:checked')?.value || "";
+  document.querySelectorAll(".aiprov").forEach((d) => d.classList.toggle("hidden", d.dataset.p !== p));
+  if (p === "ollama") aiOlStatus();
+}
 $("#aiSetForm").querySelectorAll('input[name="provider"]').forEach((r) => (r.onchange = aiProvUi));
+$("#aiSetDialog").addEventListener("close", () => clearTimeout(aiOlT));
+async function aiOlStatus() {
+  clearTimeout(aiOlT);
+  const box = $("#aiOlStatus");
+  let st = null, modInfo = null;
+  try { st = await amod("/ollama/models"); } catch {}
+  if (st?.builtin) modInfo = await api("/api/modules/ollama").catch(() => null);
+  if (!st) box.innerHTML = `<span class="err">The AI Assistant app is not answering.</span>`;
+  else if (st.reachable) box.innerHTML = `<span class="ok">● ${st.builtin ? "Local AI app running" : "Ollama reachable at " + esc(st.url)}</span> · installed models: ${st.models.length ? st.models.map((m) => `<b>${esc(m.name)}</b> (${m.gb} GB)`).join(", ") : "<b>none yet - download one below</b>"}`;
+  else if (st.builtin) box.innerHTML = modInfo?.enabled
+    ? `<span class="muted">● Local AI app is starting… (the first start downloads the Ollama program, about 1-3 GB - can take several minutes)</span>`
+    : `<span class="err">● The Local AI app is off.</span> <button type="button" class="small" onclick="aiOlStart(this)">Start Local AI</button>`;
+  else box.innerHTML = `<span class="err">● Cannot reach Ollama at ${esc(st.url)}.</span> Check that it runs there and listens on the network (OLLAMA_HOST=0.0.0.0), or clear the address to use Ellalon's own Local AI app.`;
+  $("#aiOlModels").innerHTML = (st?.models || []).map((m) => `<option value="${esc(m.name)}">`).join("") + ["qwen2.5vl:7b", "qwen2.5vl:3b", "qwen3:8b"].map((x) => `<option value="${x}">`).join("");
+  const p = st?.pull || {}, bar = $("#aiOlPullBar");
+  bar.classList.toggle("hidden", !p.model);
+  if (p.model) {
+    bar.querySelector("i").style.width = (p.pct || 0) + "%";
+    bar.querySelector("span").innerHTML = p.error ? `<span class="err">${esc(p.model)}: ${esc(p.error)}</span>` : `${esc(p.model)}: ${esc(p.status)} ${p.running ? (p.pct || 0) + "%" : ""}`;
+  }
+  $("#aiOlPull").disabled = !!p.running || !st?.reachable;
+  if ($("#aiSetDialog").open && (p.running || (st && !st.reachable && modInfo?.enabled))) aiOlT = setTimeout(aiOlStatus, 3000);
+}
+window.aiOlStart = async (b) => {
+  b.disabled = true;
+  try { await api("/api/modules/ollama/enable", { method: "POST" }); }
+  catch (err) { notify(/not found|pull/i.test(errText(err)) ? "Could not download the Ollama program - the server needs internet access for this." : errText(err)); }
+  setTimeout(aiOlStatus, 2000);
+};
+$("#aiOlPull").onclick = async () => {
+  const model = el($("#aiSetForm"), "ollama_model").value.trim() || "qwen2.5vl:7b";
+  try { await aiSaveSettings(); await amod("/ollama/pull", { method: "POST", body: { model } }); } catch (err) { return notify(errText(err)); }
+  setTimeout(aiOlStatus, 800);
+};
 async function aiSaveSettings() {
   const f = $("#aiSetForm");
   const body = { provider: f.querySelector('input[name="provider"]:checked')?.value || "", anthropic_key: el(f, "anthropic_key").value.trim() || null,
@@ -323,7 +362,7 @@ $("#aiSetSave").onclick = async () => {
   try { await aiSaveSettings(); msg.className = "small ok"; msg.textContent = "Saved."; loadAssistant(); } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
 };
 $("#aiSetTest").onclick = async () => {
-  const msg = $("#aiSetMsg"); msg.className = "small muted"; msg.textContent = "Saving and asking the model…";
+  const msg = $("#aiSetMsg"); msg.className = "small muted"; msg.textContent = "Saving and asking the model… (a local model's first answer can take a minute)";
   try { await aiSaveSettings(); const r = await amod("/settings/test", { method: "POST" }); msg.className = "small ok"; msg.textContent = `✓ Works (${r.seconds}s): ${r.answer}`; loadAssistant(); }
   catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
 };

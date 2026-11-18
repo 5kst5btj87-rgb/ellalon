@@ -562,24 +562,30 @@
   <button type="button" class="ghost" data-close>Cancel</button> <button id="ruleSave">Save rule</button>
 </form></dialog>
 
-<dialog id="aiSetDialog"><form id="aiSetForm" method="dialog">
+<dialog id="aiSetDialog" class="wide"><form id="aiSetForm" method="dialog">
   <h3>Assistant settings</h3>
-  <label class="inline"><input type="radio" name="provider" value="anthropic"> <b>Claude (Anthropic API)</b> - best quality, reads PDFs and floor plans; needs internet and an API key (paid per use)</label>
-  <div class="fgrid2 aiprov" data-p="anthropic">
+  <label class="aiopt"><input type="radio" name="provider" value="anthropic"><span><b>Claude (Anthropic API)</b><br><span class="muted small">Best quality, reads PDFs and floor plans. Needs internet and an API key (paid per use).</span></span></label>
+  <div class="aiprov" data-p="anthropic">
     <label>API key<input name="anthropic_key" type="password" autocomplete="off" placeholder="sk-ant-…"></label>
     <label>Model<input name="anthropic_model" placeholder="claude-sonnet-5-5"></label>
+    <p class="muted small span2">Your questions and the system information the assistant looks up (camera names, events, attached files) are sent to Anthropic's API.</p>
   </div>
-  <label class="inline"><input type="radio" name="provider" value="ollama"> <b>Local model (Ollama)</b> - runs on your own server, nothing leaves the site; needs a strong machine (GPU)</label>
-  <div class="fgrid2 aiprov" data-p="ollama">
-    <label>Ollama address<input name="ollama_url" placeholder="http://10.160.230.40:11434"></label>
-    <label>Model (with tools + vision)<input name="ollama_model" placeholder="qwen2.5vl:7b"></label>
-    <label>Context size<input name="ollama_ctx" type="number" min="4096" max="131072" step="1024"></label>
+  <label class="aiopt"><input type="radio" name="provider" value="ollama"><span><b>Local AI (Ollama)</b><br><span class="muted small">Runs on this server - nothing leaves the site. Needs plenty of memory and ideally an NVIDIA GPU; weaker than Claude.</span></span></label>
+  <div class="aiprov" data-p="ollama">
+    <div id="aiOlStatus" class="span2 small"></div>
+    <label>Model<input name="ollama_model" list="aiOlModels" placeholder="qwen2.5vl:7b"><datalist id="aiOlModels"></datalist></label>
+    <label>&nbsp;<button type="button" id="aiOlPull" class="ghost">⬇ Download this model</button></label>
+    <div id="aiOlPullBar" class="span2 hidden"><div class="bar"><i></i></div><span class="small muted"></span></div>
+    <p class="muted small span2">Suggested: <b>qwen2.5vl:7b</b> (reads pictures; ~6 GB, wants a GPU with 8 GB+ or 16 GB RAM) · <b>qwen2.5vl:3b</b> (smaller, faster, weaker) · <b>qwen3:8b</b> (text only, good with tools).</p>
+    <details class="span2"><summary class="small">Ollama on another computer / advanced</summary>
+      <div class="fgrid2"><label>Ollama address (empty = Ellalon's Local AI app)<input name="ollama_url" placeholder="http://192.168.1.50:11434"></label>
+      <label>Context size<input name="ollama_ctx" type="number" min="4096" max="131072" step="1024"></label></div>
+      <p class="muted small">On another computer, Ollama must listen on the network: set OLLAMA_HOST=0.0.0.0 and open TCP port 11434.</p></details>
   </div>
-  <label class="inline"><input type="radio" name="provider" value=""> Off</label>
-  <p class="muted small">With Claude, your questions and the system information the assistant looks up (camera names, events, attached files) are sent to Anthropic's API.
-    Nothing is ever changed without your approval: rules, maps and door/relay commands appear as cards with Approve / Reject.</p>
+  <label class="aiopt"><input type="radio" name="provider" value=""><span><b>Off</b></span></label>
+  <p class="muted small">Nothing is ever changed without your approval: rules, maps and door/relay commands appear as cards with Approve / Reject.</p>
   <p id="aiSetMsg" class="small"></p>
-  <button type="button" class="ghost" data-close>Close</button> <button type="button" id="aiSetTest" class="ghost">Test</button> <button type="button" id="aiSetSave">Save</button>
+  <div class="row"><button type="button" class="ghost" data-close>Close</button> <button type="button" id="aiSetTest" class="ghost">Test</button> <button type="button" id="aiSetSave">Save</button></div>
 </form></dialog>
 
 <dialog id="aiReport" class="xwide"><div class="reportbar"><button type="button" id="aiRepPrint">🖨 Print / save as PDF</button> <button type="button" id="aiRepDel" class="danger small">Delete</button> <span class="grow"></span><button type="button" class="ghost" id="aiRepClose">Close</button></div>

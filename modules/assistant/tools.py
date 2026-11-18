@@ -31,7 +31,7 @@ async def core(path, **params):
 
 async def modget(module, path, **params):
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(f"http://{module}:8000{path}", params={k: v for k, v in params.items() if v is not None},
+        r = await c.get(f"http://ellalon-{module}:8000{path}", params={k: v for k, v in params.items() if v is not None},
                         headers={"x-ellalon-role": "module"})
         r.raise_for_status()
         return r.json()
@@ -304,7 +304,7 @@ async def run(name: str, args: dict, ctx: Context, store) -> str:
              "limit": int(a.get("limit") or 40)}
         try:
             async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.get("http://analytics:8000/sightings", params=[*q.items(), *[("tag", t) for t in a.get("tags") or []],
+                r = await c.get("http://ellalon-analytics:8000/sightings", params=[*q.items(), *[("tag", t) for t in a.get("tags") or []],
                                                                             *[("camera", x) for x in a.get("camera_ids") or []]])
                 r.raise_for_status()
                 rows = r.json()

@@ -78,9 +78,9 @@ def list_segments(cam: dict, start: float, end: float, core_url: str, token: str
     with httpx.Client(timeout=15) as c:
         for day in sorted(days):
             try:
-                r = c.get(f"http://vms-recorder:8000/cameras/{cam['id']}/recordings", params={"day": day})
+                r = c.get(f"http://ellalon-vms-recorder:8000/cameras/{cam['id']}/recordings", params={"day": day})
                 if r.status_code == 200:
-                    segs += [{"t": datetime.fromisoformat(x["start"]).timestamp(), "url": f"http://vms-recorder:8000/{x['url']}",
+                    segs += [{"t": datetime.fromisoformat(x["start"]).timestamp(), "url": f"http://ellalon-vms-recorder:8000/{x['url']}",
                               "headers": {}} for x in r.json()]
             except httpx.HTTPError:
                 pass

@@ -12,6 +12,7 @@ import httpx
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-5-5"
 DEFAULT_OLLAMA_MODEL = "qwen2.5vl:7b"
+BUILTIN_OLLAMA = "http://ellalon-ollama:11434"      # the "Local AI (Ollama)" app
 
 
 class LLMError(Exception):
@@ -97,9 +98,7 @@ def _ollama_tools(tools):
 
 
 async def _ollama(st, system, messages, tools):
-    base = (st.get("ollama_url") or "").rstrip("/")
-    if not base:
-        raise LLMError("No Ollama address - set it in ⚙ Settings (for example http://10.160.230.40:11434).")
+    base = (st.get("ollama_url") or BUILTIN_OLLAMA).rstrip("/")
     body = {"model": st.get("ollama_model") or DEFAULT_OLLAMA_MODEL, "messages": _to_ollama(system, messages),
             "stream": False, "options": {"num_ctx": int(st.get("ollama_ctx") or 16384)}}
     if tools:
@@ -108,8 +107,10 @@ async def _ollama(st, system, messages, tools):
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as c:
             r = await c.post(f"{base}/api/chat", json=body)
     except httpx.HTTPError as e:
-        raise LLMError(f"Cannot reach Ollama at {base} ({e.__class__.__name__}). Is it running and listening on the network "
-                       "(OLLAMA_HOST=0.0.0.0)?")
+        if base == BUILTIN_OLLAMA:
+            raise LLMError("The Local AI (Ollama) app is not running - start it in ⚙ Settings (or the System tab).")
+        raise LLMError(f"Cannot reach Ollama at {base} ({e.__class__.__name__}). Is Ollama installed there and listening on the "
+                       "network (OLLAMA_HOST=0.0.0.0)? Or leave the address empty to use Ellalon's own Local AI app.")
     if r.status_code != 200:
         txt = r.text[:300]
         if "does not support tools" in txt:

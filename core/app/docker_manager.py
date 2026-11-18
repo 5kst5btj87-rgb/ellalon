@@ -121,6 +121,11 @@ class DockerManager:
                 self.client.containers.run(spec.image, **kwargs)
                 break
             except APIError as e:
+                if kwargs.get("device_requests") and re.search(r"device driver|gpu|nvidia", str(e), re.I):
+                    log.warning("%s: no usable GPU (%s) - starting on the CPU", spec.name, str(e)[:160])
+                    kwargs.pop("device_requests")
+                    self.remove(spec.name)
+                    continue
                 # a network share that cannot be mounted must not stop recording to the others
                 bad = set(re.findall(r"ellalon-storage-([a-z0-9-]+)", str(e))) & remote
                 if not bad:
