@@ -31,7 +31,7 @@ FPS = float(os.environ.get("FACE_FPS", "2"))
 ENGINE = os.environ.get("FACE_ENGINE", "insightface")
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
-m = EllalonModule(version="0.2.0")
+m = EllalonModule(version="0.2.1")
 app = m.app
 
 
@@ -53,6 +53,35 @@ class FaceEngine:
             raise RuntimeError("No face engine in this image (built with ENGINE=none)")
         return [{"bbox": f.bbox.astype(int).tolist(), "score": float(f.det_score),
                  "embedding": f.normed_embedding} for f in self.model.get(img)]
+
+
+def enroll_variants(img: np.ndarray):
+    """Close-up / passport photos: the detector misses a face that fills the frame, so also try
+    the photo with a margin around it and at a smaller scale."""
+    yield img
+    h, w = img.shape[:2]
+    for pad in (0.35, 0.8):
+        py, px = int(h * pad), int(w * pad)
+        yield cv2.copyMakeBorder(img, py, py, px, px, cv2.BORDER_CONSTANT, value=(127, 127, 127))
+    if max(h, w) > 400:                                    # very sharp, very large close-up
+        k = 300 / max(h, w)
+        small = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+        yield cv2.copyMakeBorder(small, 170, 170, 170, 170, cv2.BORDER_CONSTANT, value=(127, 127, 127))
+
+
+def enroll_face(img: np.ndarray):
+    """Returns (image, face) for the one person in the photo, or (None, number_of_faces)."""
+    found = 0
+    for v in enroll_variants(img):
+        faces = [f for f in engine.faces(v) if f["score"] >= 0.4]
+        if not faces:
+            continue
+        area = lambda f: (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1])
+        faces.sort(key=area, reverse=True)
+        if len(faces) == 1 or area(faces[0]) >= 3 * area(faces[1]):   # one clear main face
+            return v, faces[0]
+        found = len(faces)
+    return None, found
 
 
 class Watchlist:
@@ -216,13 +245,14 @@ async def enroll(name: str = Form(...), list_name: str = Form("Watch list"), sev
     embs, first = [], None
     for ph in photos:
         img = cv2.imdecode(np.frombuffer(await ph.read(), np.uint8), cv2.IMREAD_COLOR)
-        faces = await asyncio.to_thread(engine.faces, img) if img is not None else []
         if img is None:
-            raise HTTPException(400, f"{ph.filename}: not a picture")
-        if len(faces) != 1:
-            raise HTTPException(400, f"{ph.filename}: needs exactly one face, found {len(faces)}")
-        embs.append(faces[0]["embedding"].tolist())
-        first = first or (img, faces[0]["bbox"])
+            raise HTTPException(400, f"{ph.filename}: not a picture (use JPG or PNG)")
+        used, face = await asyncio.to_thread(enroll_face, img)
+        if used is None:
+            raise HTTPException(400, f"{ph.filename}: no face found - use a clear, front-facing photo with the whole head visible"
+                                if not face else f"{ph.filename}: {face} faces of similar size - use a photo of this person alone")
+        embs.append(face["embedding"].tolist())
+        first = first or (used, face["bbox"])
     pid = uuid.uuid4().hex[:12]
     watchlist.people[pid] = {"name": name.strip() or "Unnamed", "list": list_name.strip() or "Watch list",
                              "severity": severity, "embeddings": embs}
