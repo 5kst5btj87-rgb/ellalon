@@ -28,6 +28,7 @@
       <a data-tab="fastpb">Fast playback</a>
       <a data-tab="playback">Playback</a>
       <a data-tab="cameras">Cameras</a>
+      <a data-tab="rules">Rules</a>
       <a data-tab="integrations">Integrations</a>
       <a data-tab="storage">Storage</a>
       <a data-tab="modules">System</a>
@@ -109,6 +110,12 @@
         <span class="muted">Click Edit to change a camera or copy its settings to other cameras.</span>
       </div>
       <table><thead><tr><th class="adm"><input type="checkbox" id="camSelAll" title="Select all"></th><th>#</th><th>Name</th><th>Status</th><th>Brand</th><th>IP</th><th>Ch</th><th>Location</th><th>Sub</th><th>Rec</th><th>Analytics</th><th>Face</th><th>Events</th><th></th></tr></thead><tbody id="cameras"></tbody></table>
+    </div>
+
+    <div id="tab-rules" class="tab hidden">
+      <div class="toolbar"><button id="ruleAdd">+ New rule</button>
+        <span class="muted small">When something happens → only if the conditions are met → then do these actions. Rules run on the server, also when nobody is logged in.</span></div>
+      <div id="ruleList" class="rules"></div>
     </div>
 
     <div id="tab-integrations" class="tab hidden">
@@ -374,6 +381,39 @@
   <p id="askText"></p>
   <input id="askInput" class="hidden" autocomplete="off">
   <div class="row"><button type="button" class="ghost" id="askCancel">Cancel</button> <button id="askOk">OK</button></div>
+</form></dialog>
+
+<dialog id="ruleDialog" class="xwide"><form id="ruleForm">
+  <h3 id="ruleTitle">New rule</h3>
+  <div class="row"><label class="grow">Name<input id="rName" maxlength="80" placeholder="e.g. Door forced at night"></label>
+    <label class="inline"><input type="checkbox" id="rEnabled" checked> Rule on</label></div>
+  <section class="rsec"><h4><span class="step">1</span> When</h4>
+    <p class="muted small">Any of the ticked events (none ticked and nothing typed = every event).</p>
+    <div id="rEvents" class="rEvents"></div>
+    <div class="fgrid">
+      <label>Other event types<input id="rEventsOther" placeholder="wildcards, comma separated: apollo.*, custom.door_night"></label>
+      <label>At least priority<select id="rSev"><option value="info">Any</option><option value="low">Low</option><option value="warning">Warning</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+      <label>Text in the event contains<input id="rText" placeholder="e.g. Lobby"></label>
+    </div>
+    <details><summary>Only from these cameras <span id="rCamsN" class="muted small"></span></summary><div class="checks" id="rCams"></div></details>
+    <details><summary>Only from these doors / devices <span id="rDevsN" class="muted small"></span></summary><div class="checks" id="rDevs"></div></details>
+  </section>
+  <section class="rsec"><h4><span class="step">2</span> Only if <span class="muted small">(optional)</span></h4>
+    <div class="row days" id="rDays"></div>
+    <div class="fgrid">
+      <label>Between<input id="rFrom" type="time"></label><label>and<input id="rTo" type="time"></label>
+      <label>Wait between firings (s)<input id="rCool" type="number" min="0" placeholder="0"></label>
+      <label>At least … times<input id="rCount" type="number" min="0" placeholder="1"></label>
+      <label>… within (s)<input id="rWindow" type="number" min="0" placeholder="60"></label>
+    </div>
+  </section>
+  <section class="rsec"><h4><span class="step">3</span> Then</h4>
+    <div id="rActions"></div>
+    <select id="rAddAct"><option value="">+ Add an action…</option><option value="alarm">Raise an alarm (Alarm manager)</option><option value="wall">Show cameras on the video wall</option><option value="device">Control a door / relay / input / panel</option><option value="notify">Pop-up on all screens</option><option value="event">Log an event</option><option value="webhook">Call a web address (webhook)</option><option value="command">Module command (advanced)</option></select>
+    <p class="muted small">In texts you can use {device} {camera} {text} {title} {type} {severity}.</p>
+  </section>
+  <p id="ruleMsg" class="small"></p>
+  <button type="button" class="ghost" data-close>Cancel</button> <button id="ruleSave">Save rule</button>
 </form></dialog>
 
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>

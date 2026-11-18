@@ -70,7 +70,7 @@ document.querySelectorAll("nav a").forEach((a) => (a.onclick = () => show(a.data
 function show(tab) {
   document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== "tab-" + tab));
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 
 // ---------------------------------------------------------------- live events
@@ -88,6 +88,7 @@ function connectWs() {
     if (["high", "critical"].includes(data.severity)) flashCamera(data.camera_id);
     if (data.type.startsWith("camera.") && !$("#tab-cameras").classList.contains("hidden")) loadCameras();
     if (data.source === "integrations" && !$("#tab-integrations").classList.contains("hidden")) refreshIntegrationsSoon();
+    if (data.type === "rule.notify") { alarmToast({ ...data, payload: { title: `${data.payload?.title || ""}${data.payload?.text && data.payload.text !== data.payload.title ? " - " + data.payload.text : ""}` } }, "Rule"); alarmBeep(); }
     if (data.type.startsWith("incident.")) {
       if (!$("#tab-incidents").classList.contains("hidden")) loadIncidents(); else refreshAlarmBadge();
       if (data.type === "incident.opened") { alarmToast(data); alarmBeep(); }
@@ -382,10 +383,10 @@ function alarmBeep() {
       o.start(audioCtx.currentTime + d); o.stop(audioCtx.currentTime + d + 0.15); });
   } catch {}
 }
-function alarmToast(e) {
+function alarmToast(e, head = "New alarm") {
   const t = document.createElement("div");
   t.className = "toast " + esc(e.severity);
-  t.innerHTML = `<b>New alarm</b> ${esc(e.payload?.title || "")}<div class="small">${esc(camName(e.camera_id))}</div>`;
+  t.innerHTML = `<b>${esc(head)}</b> ${esc(e.payload?.title || "")}<div class="small">${esc(e.camera_id ? camName(e.camera_id) : "")}</div>`;
   t.onclick = () => { t.remove(); show("incidents"); };
   $("#toasts").prepend(t); setTimeout(() => t.remove(), 8000);
   while ($("#toasts").children.length > 4) $("#toasts").lastElementChild.remove();
@@ -476,6 +477,156 @@ $("#fpPlay").onclick = () => {
   vids.forEach((v) => (anyPlaying ? v.pause() : v.play().catch(() => {})));
 };
 $("#fpRestart").onclick = () => document.querySelectorAll("#fpGrid video").forEach((v) => { if (v.src) { v.currentTime = 0; v.play().catch(() => {}); } });
+
+// ---------------------------------------------------------------- rules (c2 module)
+let rules = [], ruleCatalog = [], ruleDevs = [], ruleTypes = {}, ruleEditing = null;
+const SEV_TXT = { info: "Any", low: "Low", warning: "Warning", high: "High", critical: "Critical" };
+const DAY_NAMES = [[6, "Sun"], [0, "Mon"], [1, "Tue"], [2, "Wed"], [3, "Thu"], [4, "Fri"], [5, "Sat"]];
+const ACT_NAME = { alarm: "Raise an alarm", wall: "Video wall", device: "Control a device", notify: "Pop-up", event: "Log an event",
+  webhook: "Webhook", command: "Module command", incident: "Raise an alarm" };
+async function loadRules() {
+  try { [rules, ruleCatalog] = await Promise.all([mod("c2", "/rules"), mod("c2", "/catalog")]); }
+  catch { $("#ruleList").innerHTML = `<p class="muted">The Command &amp; Control module is not running (System tab).</p>`; return; }
+  try { [ruleDevs, ruleTypes] = await Promise.all([mod("integrations", "/devices"), mod("integrations", "/types")]); } catch { ruleDevs = []; ruleTypes = {}; }
+  if (!cameras.length) try { cameras = await api("/api/cameras"); } catch {}
+  renderRules();
+}
+const evLabel = (t) => ruleCatalog.find((c) => c.type === t)?.label || t;
+function ruleSummary(r) {
+  const t = r.trigger || {}, c = r.conditions || {};
+  const when = (t.events || []).length ? t.events.map(evLabel).join(" or ") : "any event";
+  const bits = [when];
+  if (t.min_severity && t.min_severity !== "info") bits.push(`priority ≥ ${SEV_TXT[t.min_severity]}`);
+  if ((t.cameras || []).length) bits.push("cameras: " + t.cameras.map(camName).join(", "));
+  if ((t.devices || []).length) bits.push("devices: " + t.devices.map((d) => ruleDevs.find((x) => x.id === d)?.name || d).join(", "));
+  if (t.text) bits.push(`text “${t.text}”`);
+  const only = [];
+  if ((c.days || []).length && c.days.length < 7) only.push(DAY_NAMES.filter(([v]) => c.days.includes(v)).map(([, n]) => n).join(" "));
+  if (c.time_from && c.time_to) only.push(`${c.time_from}–${c.time_to}`);
+  if (c.count > 1 && c.window) only.push(`${c.count}× within ${c.window}s`);
+  if (c.cooldown) only.push(`wait ${c.cooldown}s`);
+  const then = (r.actions || []).map((a) => a.do === "device" ? `${ACTION_LABEL[a.action] || a.action} ${a.device_name || ""}` : a.do === "alarm" ? `alarm${a.severity && a.severity !== "event" ? " (" + a.severity + ")" : ""}` : ACT_NAME[a.do] || a.do);
+  return `<b>When</b> ${esc(bits.join(" · "))}${only.length ? ` <b>only if</b> ${esc(only.join(" · "))}` : ""} <b>then</b> ${esc(then.join(", "))}`;
+}
+function renderRules() {
+  const admin = me.role === "admin";
+  $("#ruleAdd").classList.toggle("hidden", !admin);
+  $("#ruleList").innerHTML = rules.map((r) => {
+    const st = r.stats || {}, last = st.last ? new Date(st.last).toLocaleString() : "";
+    const bad = (st.last_result || []).some((x) => /FAILED/.test(x));
+    return `<div class="card rule ${r.enabled ? "" : "off"}">
+      <div class="rhead"><label class="switch" title="Rule on / off"><input type="checkbox" ${r.enabled ? "checked" : ""} ${admin ? "" : "disabled"} onchange="ruleToggle('${r.id}', this.checked)"><span></span></label>
+        <h3>${esc(r.name)}</h3><span class="grow"></span>
+        ${admin ? `<button class="ghost" onclick="ruleTest('${r.id}')">Test</button> <button class="ghost" onclick="ruleEdit('${r.id}')">Edit</button> <button class="ghost" onclick="ruleEdit('${r.id}', true)">Duplicate</button> <button class="danger" onclick="ruleDel('${r.id}')">Delete</button>` : ""}</div>
+      <p class="small">${ruleSummary(r)}</p>
+      <p class="muted small">${st.fired ? `Fired ${st.fired} time(s) · last ${esc(last)}${st.last_result ? ` · ${bad ? '<span class="err">' : ""}${esc(st.last_result.join(", "))}${bad ? "</span>" : ""}` : ""}` : "Not fired yet"}</p>
+    </div>`;
+  }).join("") || `<p class="muted">No rules yet - click “New rule”.</p>`;
+}
+window.ruleToggle = async (id, on) => {
+  const r = rules.find((x) => x.id === id);
+  try { await mod("c2", `/rules/${id}`, { method: "PUT", body: { ...r, enabled: on } }); } catch (err) { notify(errText(err)); }
+  loadRules();
+};
+window.ruleDel = async (id) => {
+  const r = rules.find((x) => x.id === id);
+  if (!(await ask(`Delete the rule “${r.name}”?`, { ok: "Delete", danger: true }))) return;
+  try { await mod("c2", `/rules/${id}`, { method: "DELETE" }); } catch (err) { notify(errText(err)); }
+  loadRules();
+};
+window.ruleTest = async (id) => {
+  const r = rules.find((x) => x.id === id);
+  if (!(await ask(`Run the actions of “${r.name}” now with a test event? (Doors and relays in the rule will really be operated.)`, { ok: "Run test" }))) return;
+  try { const t = await mod("c2", `/rules/${id}/test`, { method: "POST" }); notify(`Test of “${r.name}”:\n${t.results.join("\n") || "no actions"}`); }
+  catch (err) { notify(errText(err)); }
+  loadRules();
+};
+function ruleFill(r) {
+  const t = r.trigger || {}, c = r.conditions || {};
+  $("#rName").value = r.name || ""; $("#rEnabled").checked = r.enabled !== false;
+  const groups = {}; ruleCatalog.forEach((x) => (groups[x.group] ||= []).push(x));
+  const picked = new Set(t.events || []);
+  $("#rEvents").innerHTML = Object.entries(groups).map(([g, items]) => `<div class="evGroup"><b class="small">${esc(g)}</b>
+    ${items.map((x) => `<label class="inline" title="${esc(x.type)}"><input type="checkbox" value="${esc(x.type)}" ${picked.has(x.type) ? "checked" : ""}> ${esc(x.label || x.type)}${x.count ? ` <span class="muted small">(${x.count})</span>` : ""}</label>`).join("")}</div>`).join("");
+  $("#rEventsOther").value = (t.events || []).filter((e) => !ruleCatalog.some((x) => x.type === e)).join(", ");
+  $("#rSev").value = t.min_severity || "info"; $("#rText").value = t.text || "";
+  $("#rCams").innerHTML = cameras.map((cm) => `<label class="inline"><input type="checkbox" value="${cm.id}" ${(t.cameras || []).includes(cm.id) ? "checked" : ""}> ${esc(cm.name)}</label>`).join("") || `<span class="muted small">No cameras</span>`;
+  $("#rDevs").innerHTML = ruleDevs.map((d) => `<label class="inline"><input type="checkbox" value="${esc(d.id)}" ${(t.devices || []).includes(d.id) ? "checked" : ""}> ${esc(d.name)} <span class="muted small">${esc(d.kind)}</span></label>`).join("") || `<span class="muted small">No imported devices (Integrations tab)</span>`;
+  $("#rDays").innerHTML = DAY_NAMES.map(([v, n]) => `<label class="chip"><input type="checkbox" value="${v}" ${(c.days || []).includes(v) ? "checked" : ""}><span>${n}</span></label>`).join("") + `<span class="muted small">no day ticked = every day</span>`;
+  $("#rFrom").value = c.time_from || ""; $("#rTo").value = c.time_to || "";
+  $("#rCool").value = c.cooldown || ""; $("#rCount").value = c.count || ""; $("#rWindow").value = c.window || "";
+  $("#rActions").innerHTML = ""; (r.actions || []).forEach(ruleAddAction);
+  ruleCounts();
+}
+function ruleCounts() {
+  const n = (sel) => $(sel).querySelectorAll("input:checked").length;
+  $("#rCamsN").textContent = n("#rCams") ? `(${n("#rCams")} chosen)` : "(any)"; $("#rDevsN").textContent = n("#rDevs") ? `(${n("#rDevs")} chosen)` : "(any)";
+}
+$("#rCams").onchange = $("#rDevs").onchange = ruleCounts;
+const sevSel = (v, withEvent) => `<select data-k="severity">${withEvent ? `<option value="event" ${v === "event" || !v ? "selected" : ""}>Same as the event</option>` : ""}${["warning", "high", "critical"].map((x) => `<option ${v === x ? "selected" : ""} value="${x}">${SEV_TXT[x]}</option>`).join("")}</select>`;
+function ruleAddAction(a) {
+  a = typeof a === "string" ? { do: a } : a;
+  const box = document.createElement("div"); box.className = "ract"; box.dataset.do = a.do === "incident" ? "alarm" : a.do;
+  const v = (k, d = "") => esc(a[k] ?? d);
+  let body = "";
+  if (box.dataset.do === "alarm") body = `<label>Priority${sevSel(a.severity, true)}</label><label class="grow">Title<input data-k="title" value="${v("title")}" placeholder="{title}"></label>`;
+  else if (a.do === "wall") body = `<label>Camera<select data-k="camera"><option value="event">The event's camera(s)</option>${cameras.map((c) => `<option value="${c.id}" ${String(a.camera) === String(c.id) ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>
+      <label>From tile<input data-k="tile" type="number" min="1" value="${(+a.tile || 0) + 1}"></label><label>Up to … cameras<input data-k="count" type="number" min="1" max="16" value="${v("count", 1)}"></label>`;
+  else if (a.do === "device") {
+    const opts = ruleDevs.map((d) => `<option value="${esc(d.id)}" ${a.device_id === d.id ? "selected" : ""}>${esc(d.name)} (${esc(d.kind)})</option>`).join("");
+    body = `<label class="grow">Device<select data-k="device_id"><option value="">Choose…</option>${opts}</select></label><label>Do<select data-k="action"></select></label>`;
+  } else if (a.do === "notify") body = `<label>Title<input data-k="title" value="${v("title")}" placeholder="rule name"></label><label class="grow">Text<input data-k="text" value="${v("text")}" placeholder="{title}"></label><label>Look${sevSel(a.severity || "warning")}</label>`;
+  else if (a.do === "event") body = `<label>Event type<input data-k="type" value="${v("type", "rule.event")}"></label><label class="grow">Text<input data-k="text" value="${v("text")}" placeholder="rule name"></label><label>Priority<select data-k="severity">${["info", "low", "warning", "high", "critical"].map((x) => `<option ${a.severity === x ? "selected" : ""}>${x}</option>`).join("")}</select></label>`;
+  else if (a.do === "webhook") body = `<label>Method<select data-k="method">${["POST", "GET", "PUT"].map((x) => `<option ${a.method === x ? "selected" : ""}>${x}</option>`).join("")}</select></label><label class="grow">Address<input data-k="url" value="${v("url")}" placeholder="https://…"></label><label class="full">Body (empty = the event as JSON)<textarea data-k="body" rows="2">${v("body")}</textarea></label>`;
+  else if (a.do === "command") body = `<label>Module<input data-k="module" value="${v("module")}"></label><label>Command<input data-k="command" value="${v("command")}"></label><label class="grow">Arguments (JSON)<input data-k="args" value="${esc(JSON.stringify(a.args || {}))}"></label>`;
+  box.innerHTML = `<div class="rahead"><b>${ACT_NAME[box.dataset.do] || a.do}</b><span class="grow"></span><button type="button" class="ghost small" title="Remove">×</button></div><div class="row wrap">${body}</div>`;
+  box.querySelector(".rahead button").onclick = () => box.remove();
+  if (a.do === "device") {
+    const dsel = box.querySelector('[data-k="device_id"]'), asel = box.querySelector('[data-k="action"]');
+    const fill = () => { const d = ruleDevs.find((x) => x.id === dsel.value), sys = d && d.system_id.split("-")[0];
+      const acts = (d && ruleTypes[sys]?.actions?.[d.kind]) || [];
+      asel.innerHTML = acts.map((x) => `<option value="${x}" ${a.action === x ? "selected" : ""}>${ACTION_LABEL[x] || x}</option>`).join("") || `<option value="">-</option>`; };
+    dsel.onchange = fill; fill();
+  }
+  $("#rActions").appendChild(box);
+}
+$("#rAddAct").onchange = () => { if ($("#rAddAct").value) ruleAddAction($("#rAddAct").value); $("#rAddAct").value = ""; };
+function ruleRead() {
+  const checked = (sel) => [...$(sel).querySelectorAll("input:checked")].map((x) => x.value);
+  const events = [...checked("#rEvents"), ...$("#rEventsOther").value.split(",").map((x) => x.trim()).filter(Boolean)];
+  const actions = [...$("#rActions").children].map((box) => {
+    const a = { do: box.dataset.do };
+    box.querySelectorAll("[data-k]").forEach((i) => { a[i.dataset.k] = i.value; });
+    if (a.do === "wall") { a.tile = Math.max(0, (+a.tile || 1) - 1); a.count = +a.count || 1; }
+    if (a.do === "device") a.device_name = ruleDevs.find((d) => d.id === a.device_id)?.name || "";
+    if (a.do === "command") { try { a.args = JSON.parse(a.args || "{}"); } catch { throw new Error("Module command: arguments must be JSON, e.g. {\"camera_id\": 3}"); } }
+    return a;
+  });
+  return { name: $("#rName").value.trim(), enabled: $("#rEnabled").checked,
+    trigger: { events, min_severity: $("#rSev").value, cameras: checked("#rCams").map(Number), devices: checked("#rDevs"), text: $("#rText").value.trim() },
+    conditions: { days: checked("#rDays").map(Number), time_from: $("#rFrom").value, time_to: $("#rTo").value,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", cooldown: +$("#rCool").value || 0, count: +$("#rCount").value || 0, window: +$("#rWindow").value || 0 },
+    actions };
+}
+$("#ruleAdd").onclick = async () => {
+  if (!ruleCatalog.length) await loadRules();
+  ruleEditing = null; $("#ruleTitle").textContent = "New rule"; $("#ruleMsg").textContent = "";
+  ruleFill({ enabled: true, actions: [{ do: "alarm", severity: "event" }] }); $("#ruleDialog").showModal();
+};
+window.ruleEdit = (id, copy) => {
+  const r = rules.find((x) => x.id === id);
+  ruleEditing = copy ? null : r; $("#ruleTitle").textContent = copy ? "New rule (copy)" : `Edit “${r.name}”`; $("#ruleMsg").textContent = "";
+  ruleFill(copy ? { ...r, name: r.name + " (copy)" } : r); $("#ruleDialog").showModal();
+};
+$("#ruleForm").onsubmit = async (e) => {
+  e.preventDefault(); const msg = $("#ruleMsg");
+  let body; try { body = ruleRead(); } catch (err) { msg.className = "small err"; msg.textContent = err.message; return; }
+  if (!body.actions.length) { msg.className = "small err"; msg.textContent = "Add at least one action under “Then”."; return; }
+  try {
+    await (ruleEditing ? mod("c2", `/rules/${ruleEditing.id}`, { method: "PUT", body }) : mod("c2", "/rules", { method: "POST", body }));
+    $("#ruleDialog").close(); loadRules();
+  } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
+};
 
 // ---------------------------------------------------------------- playback (vms-recorder module)
 function loadPlayback() {
