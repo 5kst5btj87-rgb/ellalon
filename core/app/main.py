@@ -398,4 +398,11 @@ async def ws(websocket: WebSocket):
 
 # ---------------------------------------------------------------- web client
 if Path(settings.web_dir).is_dir():
-    app.mount("/", StaticFiles(directory=settings.web_dir, html=True), name="web")
+    class WebFiles(StaticFiles):
+        """Browsers must re-check the web client each time (cheap: unchanged files answer 304),
+        otherwise after an update a cached old app.js can run against the new page."""
+        async def get_response(self, path, scope):
+            r = await super().get_response(path, scope)
+            r.headers["Cache-Control"] = "no-cache"
+            return r
+    app.mount("/", WebFiles(directory=settings.web_dir, html=True), name="web")
