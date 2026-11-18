@@ -268,6 +268,8 @@ async def onvif_stream_uris(ip: str, port: int, user: str, pw: str) -> list[str]
 
 # ---------------------------------------------------------------- connection monitor
 CHECK_INTERVAL = int(os.environ.get("ELLALON_CAMERA_CHECK_INTERVAL", "30"))
+_key = lambda u: hashlib.sha256((u or "").encode()).hexdigest()[:16]   # no credentials in status
+AUTH_RETRY = 600   # seconds between automatic re-tries after a refused login
 CAM_STATUS: dict[int, dict] = {}   # camera id -> {state, detail, checked, since}
 STATE_TEXT = {"online": "online", "offline": "offline", "auth": "wrong username or password",
               "path": "wrong stream path", "error": "stream error"}
@@ -331,11 +333,28 @@ class _Rtsp:
         return int(status_line.split()[1]), hdrs
 
 
-def _auth_for(hdrs, user, pw, uri):
+def _auth_for(hdrs, user, pw, uri, scheme=None):
     challenges = hdrs.get("www-authenticate", [])
     dig = next((c for c in challenges if c.lower().startswith("digest")), None)
-    return (_digest(dig, user, pw, "DESCRIBE", uri) if dig
-            else "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode())
+    if dig and scheme != "basic":
+        return _digest(dig, user, pw, "DESCRIBE", uri)
+    return "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()
+
+
+def _nonce(hdrs) -> str:
+    m = re.search(r'nonce="?([^",]+)', " ".join(hdrs.get("www-authenticate", [])))
+    return m.group(1) if m else ""
+
+
+def _who(hdrs) -> str:
+    """Short description of the camera's login request, for error messages."""
+    ch = hdrs.get("www-authenticate", [])
+    schemes = sorted({c.split()[0].capitalize() for c in ch if c.strip()})
+    realm = re.search(r'realm="([^"]*)"', " ".join(ch))
+    server = (hdrs.get("server") or [""])[0]
+    bits = [("/".join(schemes) + " login") if schemes else "", f'realm "{realm.group(1)}"' if realm else "",
+            f"server {server}" if server else ""]
+    return ", ".join(b for b in bits if b)
 
 
 async def probe_url(url: str | None, timeout: float = 5) -> dict:
@@ -358,24 +377,42 @@ async def probe_url(url: str | None, timeout: float = 5) -> dict:
         return {"state": "online", "detail": f"{host}:{port} answers"}
     user, pw = unquote(p.username or ""), unquote(p.password or "")
     uri = urlunsplit((p.scheme, f"{host}:{port}", p.path or "/", p.query, ""))
+    challenge: dict = {}
+
+    async def login(conn, hdrs, scheme=None):
+        """Answer the challenge; if the camera replies with a new nonce (one-time nonces), answer that once."""
+        code, h2 = await conn.describe(uri, _auth_for(hdrs, user, pw, uri, scheme))
+        if code == 401 and scheme != "basic" and _nonce(h2) and _nonce(h2) != _nonce(hdrs):
+            code, h2 = await conn.describe(uri, _auth_for(h2, user, pw, uri, scheme))
+        return code, h2
+
     try:
         try:
             code, hdrs = await conn.describe(uri)
         except Exception as e:
             return {"state": "error", "detail": f"not an RTSP stream ({e.__class__.__name__})"}
+        challenge = hdrs
         if code == 401 and user:
             try:      # same connection first (session-bound nonce)
-                code, hdrs = await conn.describe(uri, _auth_for(hdrs, user, pw, uri))
+                code, h2 = await login(conn, hdrs)
             except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError):
                 conn.close()      # camera hung up after the challenge: log in on a new connection
                 conn = _Rtsp(host, port, timeout)
                 await conn.open()
-                code, hdrs2 = await conn.describe(uri, _auth_for(hdrs, user, pw, uri))
+                code, h2 = await conn.describe(uri, _auth_for(hdrs, user, pw, uri))
                 if code == 401:   # it wants a fresh challenge answered on this connection
                     try:
-                        code, hdrs = await conn.describe(uri, _auth_for(hdrs2, user, pw, uri))
+                        code, h2 = await login(conn, h2)
                     except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError):
                         code = 401
+            offered = " ".join(hdrs.get("www-authenticate", [])).lower()
+            if code == 401 and "digest" in offered and "basic" in offered:
+                conn.close()      # offers both and refused Digest: try Basic
+                conn = _Rtsp(host, port, timeout)
+                await conn.open()
+                c1, h1 = await conn.describe(uri)
+                if c1 == 401:
+                    code, h2 = await conn.describe(uri, _auth_for(h1, user, pw, uri, "basic"))
     except Exception as e:
         return {"state": "error", "detail": f"login failed ({e.__class__.__name__})"}
     finally:
@@ -383,8 +420,12 @@ async def probe_url(url: str | None, timeout: float = 5) -> dict:
     if code == 200:
         return {"state": "online", "detail": "stream OK"}
     if code in (401, 403):
-        return {"state": "auth", "detail": "wrong username or password" if user
-                else "camera needs a username and password"}
+        who = _who(challenge)
+        if not user:
+            return {"state": "auth", "detail": "camera needs a username and password" + (f" ({who})" if who else "")}
+        return {"state": "auth", "detail": "the device refused this username/password" + (f" ({who})" if who else "")
+                + ". If the password is right, the device may have locked the account after failed attempts - "
+                  "wait 30 minutes or unlock it on the device, and check the user may view live video (RTSP)."}
     if code in (400, 404, 454):
         return {"state": "path", "detail": f"stream not found (RTSP {code}) - check brand and channel"}
     return {"state": "error", "detail": f"camera answered RTSP {code}"}
@@ -414,7 +455,13 @@ async def check_camera(cid: int):
     if not enabled:
         CAM_STATUS[cid] = {"state": "disabled", "detail": "camera disabled", "checked": _now(), "since": _now()}
         return
-    await _record(cid, name, await probe_url(url))
+    prev = CAM_STATUS.get(cid)
+    if (prev and prev["state"] == "auth" and prev.get("key") == _key(url) and
+            (datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(prev["checked"])).total_seconds() < AUTH_RETRY):
+        return            # refused login: retry rarely, or devices lock the account
+    res = await probe_url(url)
+    await _record(cid, name, res)
+    CAM_STATUS[cid]["key"] = _key(url)
 
 
 async def camera_monitor():
