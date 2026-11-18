@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import logging
+import re
 
 import httpx
 
@@ -227,26 +228,253 @@ class RiscoLocalAdapter(Adapter):
 
 
 # ======================================================================== Apollo
-class ApolloAdapter(Adapter):
-    """Apollo APACS access control.
+APOLLO_KINDS = {  # device kind -> words that identify its API list
+    "door": ("door", "reader", "portal", "accesspoint"),
+    "input": ("input", "auxin", "alarmpoint", "sensor", "monitorpoint"),
+    "output": ("output", "relay", "auxout"),
+    "event": ("event", "activit", "transaction", "alarm", "history"),
+}
+APOLLO_CANDIDATES = {  # tried when the server publishes no API description
+    "door": ["/api/doors", "/api/Doors", "/api/readers", "/api/Readers", "/api/v1/doors", "/api/AccessPoints"],
+    "input": ["/api/inputs", "/api/Inputs", "/api/auxinputs", "/api/AuxInputs", "/api/AlarmPoints", "/api/v1/inputs"],
+    "output": ["/api/outputs", "/api/Outputs", "/api/relays", "/api/Relays", "/api/auxoutputs", "/api/AuxOutputs", "/api/v1/outputs"],
+    "event": ["/api/events", "/api/Events", "/api/activities", "/api/Activities", "/api/transactions", "/api/alarms"],
+}
+APOLLO_SPECS = ["/swagger/docs/v1", "/api/swagger/docs/v1", "/swagger/v1/swagger.json", "/api/swagger/v1/swagger.json",
+                "/swagger.json", "/api/swagger.json", "/openapi.json", "/api/openapi.json"]
+ID_KEYS = ("id", "Id", "ID", "DoorId", "doorId", "ReaderId", "readerId", "InputId", "inputId", "OutputId", "outputId",
+           "PointId", "Number", "number", "Address", "address", "Key", "key")
+NAME_KEYS = ("name", "Name", "Description", "description", "DisplayName", "displayName", "Label", "label", "Title")
 
-    Live link: the APACS API Service (APACS 3.7+, licence with web sessions, HTTPS on port 8081
-    by default) with an APACS operator login. Apollo does not publish the endpoint list, so the
-    doors / events / unlock paths are configurable - take them from the API documentation on
-    your APACS server. Without the API, doors can be imported from a CSV export and events can be
-    pushed to POST /modules/integrations/inbound/<system id>.
-    """
-    label = "Apollo APACS access control (beta)"
+
+class ApolloClient:
+    """Talks to the APACS API Service (APACSAPIService, HTTPS port 8081 by default, operator login).
+
+    Apollo does not publish its endpoint list, so the client finds it: it reads the API description
+    (Swagger/OpenAPI) when the server offers one, otherwise it tries the usual paths. The login style
+    is detected too (HTTP Basic, then a token login). Paths set by hand in the settings always win."""
+
+    def __init__(self, cfg: dict):
+        self.cfg = dict(cfg)
+        host = (cfg.get("host") or "").strip()
+        if not host and cfg.get("base_url"):                 # settings from older versions
+            from urllib.parse import urlsplit
+            u = urlsplit(cfg["base_url"])
+            host = u.hostname or ""
+            self.cfg.setdefault("port", u.port or 8081)
+            self.cfg.setdefault("use_ssl", u.scheme == "https")
+        self.host = host
+        self.port = int(self.cfg.get("port") or 8081)
+        self.scheme = "https" if self.cfg.get("use_ssl", True) else "http"
+        self.base = f"{self.scheme}://{self.host}:{self.port}"
+        self.user, self.pw = cfg.get("username", ""), cfg.get("password", "")
+        self.auth_mode = cfg.get("auth_mode") or ""
+        self.token = None
+        self.c = None
+        self.steps: list[dict] = []
+        self.paths = {k: cfg.get(f"{k}s_path") or "" for k in ("door", "input", "output", "event")}
+        self.paths["unlock"] = cfg.get("unlock_path") or ""
+
+    async def __aenter__(self):
+        if not self.host:
+            raise ValueError("Enter the APACS server IP address")
+        self.c = httpx.AsyncClient(base_url=self.base, verify=bool(self.cfg.get("verify_tls")), timeout=10,
+                                   follow_redirects=True)
+        return self
+
+    async def __aexit__(self, *a):
+        await self.c.aclose()
+
+    def step(self, ok: bool, text: str):
+        self.steps.append({"ok": ok, "text": text})
+
+    # ---------------------------------------------------------------- login
+    def _headers(self):
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+    async def request(self, method, path, **kw):
+        auth = (self.user, self.pw) if self.auth_mode == "basic" and self.user else None
+        return await self.c.request(method, path, auth=auth, headers=self._headers(), **kw)
+
+    async def connect(self):
+        try:
+            r = await self.c.get("/api")
+        except httpx.ConnectError as e:
+            hint = " - is the APACS API Service started, and the port open in the Windows firewall?"
+            if "SSL" in str(e) or "certificate" in str(e).lower():
+                hint = " - HTTPS problem: untick 'Check the HTTPS certificate', or the service may run plain HTTP (untick HTTPS)"
+            raise ValueError(f"Cannot reach {self.base}{hint}")
+        except httpx.HTTPError as e:
+            raise ValueError(f"Cannot reach {self.base} ({e.__class__.__name__})")
+        self.step(True, f"Reached the APACS API Service at {self.base}")
+        if self.auth_mode == "token":
+            await self._token_login()
+        elif self.auth_mode != "basic":
+            await self._detect_login(r)
+
+    async def _detect_login(self, first):
+        r = await self.c.get("/api", auth=(self.user, self.pw)) if self.user else first
+        if r.status_code not in (401, 403):
+            self.auth_mode = "basic"                           # confirmed later on a data request
+            return
+        if await self._token_login(quiet=True):
+            return
+        raise ValueError("APACS rejected the operator login - check the user name / password (an APACS operator), "
+                         "and that the APACS licence allows web sessions")
+
+    async def _token_login(self, quiet=False) -> bool:
+        tries = [("/token", "form"), ("/api/token", "form"), ("/api/login", "json"), ("/api/auth/login", "json"),
+                 ("/api/Login", "json"), ("/api/session", "json")]
+        for path, kind in tries:
+            try:
+                if kind == "form":
+                    r = await self.c.post(path, data={"grant_type": "password", "username": self.user, "password": self.pw})
+                else:
+                    r = await self.c.post(path, json={"username": self.user, "password": self.pw,
+                                                      "UserName": self.user, "Password": self.pw})
+            except httpx.HTTPError:
+                continue
+            if r.status_code in (200, 201):
+                try:
+                    j = r.json()
+                except ValueError:
+                    j = {}
+                tok = _pick(j, "access_token", "token", "Token", "AccessToken", "accessToken", "SessionId", "sessionId") \
+                    if isinstance(j, dict) else (j if isinstance(j, str) else None)
+                if tok or r.cookies:
+                    self.token = str(tok) if tok else None
+                    self.auth_mode = "token"
+                    self.cfg["token_path"] = path
+                    self.step(True, f"Logged in as {self.user} (token login {path})")
+                    return True
+        if not quiet:
+            raise ValueError("APACS rejected the operator login")
+        return False
+
+    # ---------------------------------------------------------------- discovery
+    async def discover(self):
+        spec = None
+        for p in APOLLO_SPECS:
+            try:
+                r = await self.request("GET", p)
+                if r.status_code == 200 and "paths" in r.text[:200000]:
+                    spec = r.json()
+                    break
+            except (httpx.HTTPError, ValueError):
+                continue
+        if spec:
+            n = self._from_spec(spec)
+            self.step(True, f"Read the API description ({n} endpoints)")
+        else:
+            self.step(True, "The server publishes no API description - trying the usual endpoints")
+
+    def _from_spec(self, spec) -> int:
+        base = (spec.get("basePath") or "").rstrip("/")
+        paths = spec.get("paths") or {}
+        gets = [base + p for p, ops in paths.items() if "get" in ops and "{" not in p]
+        posts = [(base + p) for p, ops in paths.items() if ("post" in ops or "put" in ops)]
+        for kind, words in APOLLO_KINDS.items():
+            if self.paths.get(kind):
+                continue
+            hits = [p for p in gets if any(w in p.rsplit("/", 1)[-1].lower() for w in words)]
+            if kind == "input":
+                hits = [p for p in hits if "output" not in p.lower()]
+            if hits:
+                self.paths[kind] = min(hits, key=len)
+        if not self.paths.get("unlock"):
+            for p in posts:
+                low = p.lower()
+                if any(w in low for w in ("door", "reader")) and any(w in low for w in ("unlock", "open", "grant", "pulse", "momentary")):
+                    self.paths["unlock"] = re.sub(r"\{[^}]+\}", "{door}", p, count=1)
+                    break
+        return len(paths)
+
+    async def fetch(self, kind) -> list[dict]:
+        tried = [self.paths[kind]] if self.paths.get(kind) else APOLLO_CANDIDATES[kind]
+        for path in tried:
+            try:
+                r = await self.request("GET", path)
+            except httpx.HTTPError:
+                continue
+            if r.status_code in (401, 403):
+                if self.auth_mode == "basic" and await self._token_login(quiet=True):
+                    r = await self.request("GET", path)
+                if r.status_code in (401, 403):
+                    raise ValueError("APACS refused access with this operator - check the operator's rights")
+            if r.status_code != 200:
+                continue
+            try:
+                rows = _as_list(r.json())
+            except ValueError:
+                continue
+            items = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                num = _pick(row, *ID_KEYS)
+                if num is None:
+                    continue
+                items.append({"kind": kind, "id": str(num), "name": str(_pick(row, *NAME_KEYS) or f"{kind.title()} {num}"),
+                              "where": str(_pick(row, "ControllerName", "Controller", "PanelName", "Panel", "Site",
+                                                  "SiteName", "Area", "Location") or "")})
+            self.paths[kind] = path
+            return items
+        self.paths[kind] = ""
+        return []
+
+    def discovered(self) -> dict:
+        out = {f"{k}s_path": v for k, v in self.paths.items() if k in ("door", "input", "output", "event") and v}
+        if self.paths.get("unlock"):
+            out["unlock_path"] = self.paths["unlock"]
+        out["auth_mode"] = self.auth_mode
+        return out
+
+
+async def apollo_test(cfg: dict) -> dict:
+    """Connect, log in, find the endpoints and list every door / input / output."""
+    found = {"door": [], "input": [], "output": []}
+    if not (cfg.get("host") or cfg.get("base_url") or "").strip():
+        return {"ok": False, "steps": [{"ok": False, "text": "Enter the APACS server IP address"}], "devices": [], "found": {}}
+    async with ApolloClient(cfg) as a:
+        try:
+            await a.connect()
+            await a.discover()
+            for kind, label in (("door", "doors"), ("input", "inputs"), ("output", "outputs")):
+                found[kind] = await a.fetch(kind)
+                a.step(bool(found[kind]), f"{len(found[kind])} {label}" + (f" ({a.paths[kind]})" if a.paths[kind] else " - no list found"))
+            if a.auth_mode == "basic":
+                a.step(True, f"Logged in as {a.user} (basic login)")
+            await a.fetch("event") if not a.paths.get("event") else None
+            a.step(bool(a.paths.get("event")), "Live events: " + (a.paths["event"] or "no event list found - events can be pushed to Ellalon instead"))
+            a.step(bool(a.paths.get("unlock")), "Door unlock: " + (a.paths["unlock"] or "not found (set it under Advanced)"))
+        except ValueError as e:
+            a.step(False, str(e))
+            return {"ok": False, "steps": a.steps, "devices": [], "found": {}}
+        devices = found["door"] + found["input"] + found["output"]
+        ok = bool(devices)
+        if not ok:
+            a.step(False, "Connected, but no doors, inputs or outputs were found. Set the endpoint paths under "
+                          "Advanced (see the API documentation on the APACS server).")
+        return {"ok": ok, "steps": a.steps, "devices": devices, "found": a.discovered()}
+
+
+class ApolloAdapter(Adapter):
+    """Apollo APACS access control through the APACS API Service."""
+    label = "Apollo APACS access control"
     fields = [
-        {"key": "base_url", "label": "APACS API address (optional)",
-         "placeholder": "https://apacs-server:8081/api"},
+        {"key": "host", "label": "APACS server IP", "placeholder": "192.168.1.20", "required": True},
+        {"key": "port", "label": "Port", "type": "number", "default": 8081},
         {"key": "username", "label": "APACS operator"},
-        {"key": "password", "label": "Operator password", "type": "password"},
-        {"key": "verify_tls", "label": "Verify TLS certificate", "type": "checkbox"},
-        {"key": "doors_path", "label": "Doors endpoint path (from APACS API docs)"},
-        {"key": "events_path", "label": "Events endpoint path (from APACS API docs)"},
-        {"key": "unlock_path", "label": "Unlock endpoint path, {door} = door id"},
-        {"key": "poll_seconds", "label": "Event poll interval (seconds)", "type": "number", "default": 5},
+        {"key": "password", "label": "Password", "type": "password"},
+        {"key": "use_ssl", "label": "HTTPS (APACS default)", "type": "checkbox", "default": True},
+        {"key": "verify_tls", "label": "Check the HTTPS certificate", "type": "checkbox", "advanced": True},
+        {"key": "doors_path", "label": "Doors list path", "advanced": True, "placeholder": "found automatically"},
+        {"key": "inputs_path", "label": "Inputs list path", "advanced": True, "placeholder": "found automatically"},
+        {"key": "outputs_path", "label": "Outputs list path", "advanced": True, "placeholder": "found automatically"},
+        {"key": "events_path", "label": "Events list path", "advanced": True, "placeholder": "found automatically"},
+        {"key": "unlock_path", "label": "Door unlock path, {door} = door id", "advanced": True, "placeholder": "found automatically"},
+        {"key": "auth_mode", "label": "Login method", "advanced": True, "placeholder": "found automatically"},
+        {"key": "poll_seconds", "label": "Event poll interval (seconds)", "type": "number", "default": 5, "advanced": True},
     ]
     actions = {"door": ["unlock"]}
     RULES = [  # (text contains, event type, severity, alarm?)
@@ -259,63 +487,47 @@ class ApolloAdapter(Adapter):
         (("alarm",), "alarm", "high", True),
     ]
 
-    def client(self) -> httpx.AsyncClient:
-        auth = (self.cfg.get("username", ""), self.cfg.get("password", "")) if self.cfg.get("username") else None
-        return httpx.AsyncClient(base_url=self.cfg.get("base_url", "").rstrip("/"), auth=auth,
-                                 verify=bool(self.cfg.get("verify_tls")), timeout=10)
-
     async def run(self):
-        if not self.cfg.get("base_url"):
-            self.hub.status(self.sid, "manual", "No API address - import doors from CSV, push events "
-                                                f"to /modules/integrations/inbound/{self.sid}")
-            await self._stop.wait()
-            return
-        async with self.client() as c:
-            r = await c.get("/")
-            if r.status_code in (401, 403):
-                raise RuntimeError("APACS rejected the operator login")
+        async with ApolloClient(self.cfg) as a:
+            await a.connect()
             self.connected = True
             self.hub.status(self.sid, "connected")
-            if self.cfg.get("doors_path"):
-                await self._import_api(c)
+            if not a.paths.get("event"):
+                self.hub.status(self.sid, "connected", "No event list on the API - events can be pushed to "
+                                                       f"/modules/integrations/inbound/{self.sid}")
+                await self._stop.wait()
+                return
             seen: dict[str, None] = {}
             first = True
             while not self._stop.is_set():
-                if self.cfg.get("events_path"):
-                    r = await c.get(self.cfg["events_path"])
-                    r.raise_for_status()
-                    for ev in _as_list(r.json()):
-                        key = str(_pick(ev, "id", "Id", "ID", "EventId", "eventId")
-                                  or json.dumps(ev, sort_keys=True, default=str))
-                        if key in seen:
-                            continue
-                        seen[key] = None
-                        if not first:  # do not replay history on start
-                            await self.handle_inbound(ev)
-                    first = False
-                    if len(seen) > 5000:
-                        seen = dict.fromkeys(list(seen)[-2000:])
+                r = await a.request("GET", a.paths["event"])
+                r.raise_for_status()
+                for ev in _as_list(r.json()):
+                    key = str(_pick(ev, "id", "Id", "ID", "EventId", "eventId")
+                              or json.dumps(ev, sort_keys=True, default=str))
+                    if key in seen:
+                        continue
+                    seen[key] = None
+                    if not first:  # do not replay history on start
+                        await self.handle_inbound(ev)
+                first = False
+                if len(seen) > 5000:
+                    seen = dict.fromkeys(list(seen)[-2000:])
                 try:
                     await asyncio.wait_for(self._stop.wait(), float(self.cfg.get("poll_seconds") or 5))
                 except asyncio.TimeoutError:
                     pass
 
-    async def _import_api(self, c) -> int:
-        r = await c.get(self.cfg["doors_path"])
-        r.raise_for_status()
+    async def import_devices(self, csv_text=None, items=None) -> int:
         n = 0
-        for d in _as_list(r.json()):
-            num = _pick(d, "id", "Id", "ID", "DoorId", "doorId", "ReaderId", "readerId", "number")
-            if num is None:
-                continue
-            self.hub.upsert(self.sid, "door", num, _pick(d, "name", "Name", "Description", "description"))
-            n += 1
-        self.hub.save()
-        return n
-
-    async def import_devices(self, csv_text=None) -> int:
+        if items:
+            for it in items:
+                kind = it.get("kind") if it.get("kind") in ("door", "input", "output") else "door"
+                self.hub.upsert(self.sid, kind, str(it["id"]), it.get("name"))
+                n += 1
+            self.hub.save()
+            return n
         if csv_text and csv_text.strip():
-            n = 0
             for row in csv.reader(io.StringIO(csv_text.strip())):
                 row = [c.strip() for c in row if c is not None]
                 if not row or not row[0] or row[0].lower() in ("id", "number", "door", "door id"):
@@ -324,18 +536,16 @@ class ApolloAdapter(Adapter):
                 n += 1
             self.hub.save()
             return n
-        if self.cfg.get("base_url") and self.cfg.get("doors_path"):
-            async with self.client() as c:
-                return await self._import_api(c)
-        raise ValueError("Paste a CSV (door id, door name per line) or set the doors endpoint path")
+        raise ValueError("Choose the doors and I/O to import")
 
     async def action(self, device, action):
         if action != "unlock" or device["kind"] != "door":
             raise ValueError(f"'{action}' is not possible on a {device['kind']}")
-        if not (self.cfg.get("base_url") and self.cfg.get("unlock_path")):
-            raise ValueError("Set the APACS API address and unlock endpoint path in the system settings")
-        async with self.client() as c:
-            r = await c.post(self.cfg["unlock_path"].replace("{door}", str(device["number"])))
+        if not self.cfg.get("unlock_path"):
+            raise ValueError("No door unlock path - run Test connection or set it under Advanced in the system settings")
+        async with ApolloClient(self.cfg) as a:
+            await a.connect()
+            r = await a.request("POST", self.cfg["unlock_path"].replace("{door}", str(device["number"])))
         if r.status_code >= 400:
             raise ValueError(f"APACS returned HTTP {r.status_code}")
         await self.hub.event(self.sid, "door", device["number"], "door_unlocked", "info",

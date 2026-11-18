@@ -226,15 +226,22 @@
     <label>Name<input name="name" required placeholder="Main building alarm"></label>
   </div>
   <div class="fgrid" id="intFields"></div>
+  <details id="intAdv" class="hidden"><summary class="small">Advanced (only if the test cannot find something)</summary><div class="fgrid" id="intAdvFields"></div></details>
+  <div id="intTestBox" class="hidden">
+    <div class="row"><button type="button" class="ghost" id="intTest">Test connection</button> <span id="intTestMsg" class="small"></span>
+      <button type="button" class="ghost small hidden" id="intCsv" title="If the APACS API Service cannot be used">Import doors from a CSV file instead</button></div>
+    <ul id="intSteps" class="steps"></ul>
+    <div id="intDevs"></div>
+  </div>
   <div class="checks"><label><input type="checkbox" name="enabled" checked> Enabled</label></div>
   <p class="muted small" id="intHelp"></p>
   <p id="intMsg" class="err"></p>
-  <button type="button" class="ghost" data-close>Cancel</button> <button>Save</button>
+  <button type="button" class="ghost" data-close>Cancel</button> <button id="intSave">Save</button>
 </form></dialog>
 
 <dialog id="importDialog" class="wide"><form id="importForm">
   <h3>Import doors</h3>
-  <p class="muted small">Paste a CSV exported from APACS: one door per line, <b>door id, door name</b>. Leave empty to import through the APACS API (doors endpoint).</p>
+  <p class="muted small">Paste a CSV exported from APACS: one door per line, <b>door id, door name</b>.</p>
   <div class="fgrid"><label class="full"><textarea name="csv" rows="8" placeholder="1, Main entrance&#10;2, Server room&#10;3, Loading dock"></textarea></label></div>
   <p id="importMsg" class="err"></p>
   <button type="button" class="ghost" data-close>Cancel</button> <button>Import</button>

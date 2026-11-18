@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 
-from adapters import ADAPTERS
+from adapters import ADAPTERS, apollo_test
 from ellalon_sdk import EllalonModule
 
 STORE = Path("/data/integrations.json")
@@ -228,6 +228,7 @@ async def reconnect(sid: str):
 
 class ImportIn(BaseModel):
     csv: str | None = None
+    items: list[dict] = []          # chosen devices: {kind, id, name}
 
 
 @app.post("/systems/{sid}/import")
@@ -236,12 +237,38 @@ async def import_devices(sid: str, body: ImportIn):
     if not a:
         raise HTTPException(409, "System is disabled")
     try:
-        n = await a.import_devices(body.csv)
+        n = await (a.import_devices(body.csv, body.items) if body.items else a.import_devices(body.csv))
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(502, f"{e.__class__.__name__}: {e}")
     return {"imported": n}
+
+
+class ApolloTestIn(BaseModel):
+    config: dict = {}
+    system_id: str | None = None    # editing: empty password = the saved one
+
+
+@app.post("/apollo/test")
+async def apollo_test_api(body: ApolloTestIn, request: Request):
+    """Test the APACS connection and list its doors / inputs / outputs to choose from."""
+    need_admin(request)
+    cfg = {k: v for k, v in body.config.items() if v not in (None, "")}
+    saved = store.systems.get(body.system_id or "")
+    if saved and not cfg.get("password"):
+        cfg["password"] = saved["config"].get("password", "")
+    for k in ("doors_path", "inputs_path", "outputs_path", "events_path", "unlock_path", "auth_mode"):
+        if not str(cfg.get(k, "")).strip():
+            cfg.pop(k, None)                               # empty = find automatically
+    try:
+        res = await asyncio.wait_for(apollo_test(cfg), 60)
+    except asyncio.TimeoutError:
+        return {"ok": False, "steps": [{"ok": False, "text": "No answer within 60 seconds"}], "devices": [], "found": {}}
+    known = {(d["kind"], str(d["number"])) for d in store.devices.values() if body.system_id and d["system_id"] == body.system_id}
+    for d in res["devices"]:
+        d["imported"] = (d["kind"], d["id"]) in known
+    return res
 
 
 @app.get("/devices")

@@ -1054,16 +1054,30 @@ function renderIntDevices() {
 $("#intFilter").onchange = renderIntDevices;
 function refreshIntegrationsSoon() { clearTimeout(intTimer); intTimer = setTimeout(loadIntegrations, 700); }
 
+let intFound = null;          // Apollo: result of the last connection test
+function intFieldHtml(f, cfg) {
+  const v = cfg[f.key] ?? f.default ?? "";
+  if (f.type === "checkbox") return `<label class="inline"><input type="checkbox" name="cfg_${f.key}" ${v ? "checked" : ""}> ${esc(f.label)}</label>`;
+  const ph = f.type === "password" && cfg["has_" + f.key] ? "(unchanged)" : f.placeholder || "";
+  return `<label>${esc(f.label)}<input name="cfg_${f.key}" type="${f.type || "text"}" value="${esc(v)}" placeholder="${esc(ph)}" ${f.required ? "required" : ""} autocomplete="off"></label>`;
+}
 function intRenderFields(type, cfg = {}) {
   const t = intTypes[type];
-  $("#intFields").innerHTML = t.fields.map((f) => {
+  intFound = null; $("#intSteps").innerHTML = ""; $("#intDevs").innerHTML = ""; $("#intTestMsg").textContent = "";
+  const adv = t.fields.filter((f) => f.advanced);
+  $("#intAdvFields").innerHTML = adv.map((f) => intFieldHtml(f, cfg)).join("");
+  $("#intAdv").classList.toggle("hidden", !adv.length); $("#intAdv").open = false;
+  $("#intTestBox").classList.toggle("hidden", type !== "apollo");
+  $("#intCsv").classList.toggle("hidden", type !== "apollo" || !intEditing);
+  $("#intSave").textContent = "Save";
+  $("#intFields").innerHTML = t.fields.filter((f) => !f.advanced).map((f) => {
     const v = cfg[f.key] ?? f.default ?? "";
     if (f.type === "checkbox") return `<label class="inline"><input type="checkbox" name="cfg_${f.key}" ${v ? "checked" : ""}> ${esc(f.label)}</label>`;
     const ph = f.type === "password" && cfg["has_" + f.key] ? "(unchanged)" : f.placeholder || "";
     return `<label>${esc(f.label)}<input name="cfg_${f.key}" type="${f.type || "text"}" value="${esc(v)}" placeholder="${esc(ph)}" ${f.required ? "required" : ""} autocomplete="off"></label>`;
   }).join("");
   $("#intHelp").textContent = type === "apollo"
-    ? "Apollo: the live link needs the APACS API Service (APACS 3.7+). Its endpoint paths are listed in the API documentation on your APACS server. Without it, import doors from CSV and push events to the inbound URL shown on the system card."
+    ? "Apollo: needs the APACS API Service running on the APACS server (Start menu → Apollo → Start APACS API Service; APACS 3.7+, licence with web sessions). Default port 8081 with HTTPS. Use an APACS operator login. Click Test connection, then choose the doors and I/O to import."
     : "RISCO: connects to the panel's IP module on the LAN. On mono-socket IP modules, RISCO Cloud may have to be disabled for a local connection.";
 }
 $("#intAdd").onclick = async () => {
@@ -1083,23 +1097,75 @@ window.intEdit = (sid) => {
 };
 $("#intForm").onsubmit = async (e) => {
   e.preventDefault();
-  const f = e.target, type = $("#intType").value, config = {};
+  const f = e.target, type = $("#intType").value, config = intConfig(type);
+  const body = { type, name: el(f, "name").value.trim(), enabled: el(f, "enabled").checked, config };
+  const items = intChosen(), msg = $("#intMsg");
+  if (type === "apollo" && !intEditing && !intFound) { msg.className = "err"; msg.textContent = "Click Test connection first."; return; }
+  msg.className = "muted"; msg.textContent = "Saving…";
+  try {
+    const sys = await (intEditing ? imod(`/systems/${intEditing.id}`, { method: "PUT", body }) : imod("/systems", { method: "POST", body }));
+    if (items.length) {
+      msg.textContent = `Importing ${items.length} item(s)…`;
+      const r = await imod(`/systems/${sys.id}/import`, { method: "POST", body: { items } });
+      msg.className = "ok"; msg.textContent = `Saved - imported ${r.imported} item(s).`;
+      setTimeout(() => $("#intDialog").close(), 900);
+    } else $("#intDialog").close();
+    loadIntegrations(); setTimeout(loadIntegrations, 4000);
+  } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
+};
+function intConfig(type) {
+  const f = $("#intForm"), config = {};
   for (const fd of intTypes[type].fields) {
-    const i = el(f, "cfg_" + fd.key);
+    const i = el(f, "cfg_" + fd.key); if (!i) continue;
     config[fd.key] = fd.type === "checkbox" ? i.checked : fd.type === "number" ? (i.value === "" ? fd.default : +i.value) : i.value.trim();
   }
-  const body = { type, name: el(f, "name").value.trim(), enabled: el(f, "enabled").checked, config };
-  const msg = $("#intMsg"); msg.className = "muted"; msg.textContent = "Saving…";
+  return config;
+}
+const INT_KIND = { door: "Doors", input: "Inputs", output: "Outputs" };
+function intChosen() {
+  if (!intFound) return [];
+  return [...$("#intDevs").querySelectorAll(".devSel:checked")].map((cb) => intFound.devices[+cb.value]);
+}
+function intChosenUi() {
+  const n = intChosen().length;
+  $("#intSave").textContent = n ? `Save and import ${n} item(s)` : "Save";
+}
+$("#intTest").onclick = async () => {
+  const btn = $("#intTest"), msg = $("#intTestMsg"), type = $("#intType").value;
+  btn.disabled = true; msg.className = "small muted"; msg.textContent = "Connecting to APACS…"; $("#intMsg").textContent = "";
+  $("#intSteps").innerHTML = ""; $("#intDevs").innerHTML = ""; intFound = null; intChosenUi();
   try {
-    await (intEditing ? imod(`/systems/${intEditing.id}`, { method: "PUT", body }) : imod("/systems", { method: "POST", body }));
-    $("#intDialog").close(); loadIntegrations(); setTimeout(loadIntegrations, 4000);
-  } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
+    const r = await imod("/apollo/test", { method: "POST", body: { config: intConfig(type), system_id: intEditing?.id || null } });
+    $("#intSteps").innerHTML = r.steps.map((s) => `<li class="${s.ok ? "ok" : "err"}">${s.ok ? "✓" : "✗"} ${esc(s.text)}</li>`).join("");
+    msg.className = "small " + (r.ok ? "ok" : "err");
+    msg.textContent = r.ok ? `Connected - ${r.devices.length} item(s) found. Choose what to import:` : "Connection failed - see below";
+    if (r.ok) {
+      intFound = r;
+      for (const [k, v] of Object.entries(r.found || {})) { const i = el($("#intForm"), "cfg_" + k); if (i && v) i.value = v; }   // remember what was found
+      const groups = ["door", "input", "output"].map((kind) => {
+        const rows = r.devices.map((d, i) => [d, i]).filter(([d]) => d.kind === kind);
+        if (!rows.length) return "";
+        return `<div class="devGroup"><label class="inline devHead"><input type="checkbox" class="devAll" data-kind="${kind}"> <b>${INT_KIND[kind]} (${rows.length})</b></label>
+          <div class="devList">${rows.map(([d, i]) => `<label class="inline"><input type="checkbox" class="devSel" data-kind="${kind}" value="${i}" ${d.imported ? "disabled" : ""}>
+            ${esc(d.name)} <span class="muted small">#${esc(d.id)}${d.where ? " · " + esc(d.where) : ""}${d.imported ? " · already imported" : ""}</span></label>`).join("")}</div></div>`;
+      }).join("");
+      $("#intDevs").innerHTML = groups;
+      $("#intDevs").querySelectorAll(".devAll").forEach((a) => (a.onchange = () => {
+        $("#intDevs").querySelectorAll(`.devSel[data-kind="${a.dataset.kind}"]:not(:disabled)`).forEach((cb) => (cb.checked = a.checked)); intChosenUi(); }));
+      $("#intDevs").querySelectorAll(".devSel").forEach((cb) => (cb.onchange = intChosenUi));
+    }
+  } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
+  btn.disabled = false;
 };
 window.intDelete = async (sid) => { if (confirm("Delete this system and its devices?")) { await imod(`/systems/${sid}`, { method: "DELETE" }); loadIntegrations(); } };
 window.intReconnect = async (sid) => { await imod(`/systems/${sid}/reconnect`, { method: "POST" }); loadIntegrations(); setTimeout(loadIntegrations, 4000); };
+$("#intCsv").onclick = () => {
+  const f = $("#importForm"); f.reset(); f.dataset.sid = intEditing.id; $("#importMsg").textContent = "";
+  $("#intDialog").close(); $("#importDialog").showModal();
+};
 window.intImport = async (sid) => {
   const s = intSystems.find((x) => x.id === sid);
-  if (s.type === "apollo") { const f = $("#importForm"); f.reset(); f.dataset.sid = sid; $("#importMsg").textContent = ""; $("#importDialog").showModal(); return; }
+  if (s.type === "apollo") { intEdit(sid); $("#intTest").click(); return; }    // test, then choose what to import
   try { const r = await imod(`/systems/${sid}/import`, { method: "POST", body: {} }); alert(`Imported ${r.imported} devices`); loadIntegrations(); }
   catch (err) { alert(errText(err)); }
 };

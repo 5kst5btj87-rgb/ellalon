@@ -171,3 +171,10 @@ Rules: **Intrusion** (object enters a zone), **Line crossing** (both ways / arro
 (stays N s in a zone), **Motion in an area**. Choose object kinds (people, cars, trucks, ...), certainty, cooldown and
 whether to raise an alarm (priority) in the Alarm manager - alarms carry a snapshot. "Live detection preview" shows what
 the analytics sees. Detector: YOLOX-Tiny (Megvii, Apache-2.0) on CPU, 3 frames/s per camera (ANALYTICS_FPS).
+
+### Apollo APACS: connect, test, choose what to import
+Integrations -> Add system -> Apollo APACS: enter the APACS server IP, port (8081), an APACS operator and password
+(HTTPS by default), click **Test connection**. Ellalon finds the login method and the API endpoints itself (from the
+API description when the server publishes one, otherwise the usual paths), then lists every door, input and output -
+tick what you want and **Save and import**. Endpoint paths can still be set by hand under Advanced.
+Needs the APACS API Service (APACS 3.7+, licence with web sessions).
