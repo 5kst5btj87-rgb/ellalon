@@ -230,7 +230,7 @@ class RiscoLocalAdapter(Adapter):
 # ======================================================================== Apollo
 APOLLO_KINDS = {  # device kind -> words that identify its API list
     "door": ("door", "reader", "portal", "accesspoint"),
-    "input": ("input", "auxin", "alarmpoint", "sensor", "monitorpoint"),
+    "input": ("input", "auxin", "alarmpoint", "sensor", "monitorpoint", "iopoint", "point"),
     "output": ("output", "relay", "auxout"),
     "event": ("event", "activit", "transaction", "alarm", "history"),
 }
@@ -240,11 +240,48 @@ APOLLO_CANDIDATES = {  # tried when the server publishes no API description
     "output": ["/api/outputs", "/api/Outputs", "/api/relays", "/api/Relays", "/api/auxoutputs", "/api/AuxOutputs", "/api/v1/outputs"],
     "event": ["/api/events", "/api/Events", "/api/activities", "/api/Activities", "/api/transactions", "/api/alarms"],
 }
+APOLLO_CONFIG = ["/api/configuration", "/api/Configuration", "/api/config", "/api/Config", "/api/hardware",
+                 "/api/Hardware", "/api/devices", "/api/Devices", "/api/controllers", "/api/Controllers", "/api/system"]
+APOLLO_INDEX = ["/api", "/", "/api/$metadata", "/$metadata", "/help", "/Help", "/api/help", "/api/Help"]
 APOLLO_SPECS = ["/swagger/docs/v1", "/api/swagger/docs/v1", "/swagger/v1/swagger.json", "/api/swagger/v1/swagger.json",
                 "/swagger.json", "/api/swagger.json", "/openapi.json", "/api/openapi.json"]
 ID_KEYS = ("id", "Id", "ID", "DoorId", "doorId", "ReaderId", "readerId", "InputId", "inputId", "OutputId", "outputId",
            "PointId", "Number", "number", "Address", "address", "Key", "key")
-NAME_KEYS = ("name", "Name", "Description", "description", "DisplayName", "displayName", "Label", "label", "Title")
+NAME_KEYS = ("name", "Name", "ReaderName", "DoorName", "InputName", "OutputName", "PointName", "Description",
+             "description", "DisplayName", "displayName", "Label", "label", "Title")
+
+
+def api_paths_in(text: str) -> set[str]:
+    """Endpoint paths mentioned in an index page: links, OData service documents, $metadata, help pages."""
+    found = set()
+    for m in re.finditer(r"(?:GET|POST|PUT)[\s-]+/?(api/[A-Za-z][\w/{}.-]*)", text):
+        found.add("/" + m.group(1))
+    for m in re.finditer(r"[Hh]elp/[Aa]pi/(?:GET|POST|PUT)-(api-[\w{}-]+)", text):      # ASP.NET Web API help page
+        segs = m.group(1).split("-")
+        found.add("/" + "/".join("{" + x + "}" if x.lower() in ("id", "number", "key") else x for x in segs))
+    for m in re.finditer(r"[\"'(/](api/[A-Za-z][\w/{}.-]*)", text):
+        found.add("/" + m.group(1).rstrip("."))
+    for m in re.finditer(r'EntitySet Name="(\w+)"', text):                              # OData $metadata
+        found.add(f"/api/{m.group(1)}")
+    try:
+        doc = json.loads(text)
+        if isinstance(doc, dict) and isinstance(doc.get("value"), list):                 # OData service document
+            for e in doc["value"]:
+                if isinstance(e, dict) and e.get("url"):
+                    found.add("/api/" + str(e["url"]).lstrip("/"))
+        elif isinstance(doc, dict):
+            for k, v in doc.items():
+                if isinstance(v, str) and "/api/" in v:
+                    found.add("/api/" + v.split("/api/", 1)[1])
+                elif isinstance(v, str) and v.startswith("api/"):
+                    found.add("/" + v)
+        elif isinstance(doc, list) and all(isinstance(x, str) for x in doc):
+            found |= {"/api/" + x.strip("/") for x in doc if re.fullmatch(r"[A-Za-z][\w/-]*", x.strip("/"))}
+    except ValueError:
+        pass
+    for m in re.finditer(r'<collection href="([^"]+)"', text):                           # OData XML service document
+        found.add("/api/" + m.group(1).lstrip("/"))
+    return {re.sub(r"/{2,}", "/", p) for p in found if len(p) < 120}
 
 
 class ApolloClient:
@@ -274,6 +311,9 @@ class ApolloClient:
         self.steps: list[dict] = []
         self.paths = {k: cfg.get(f"{k}s_path") or "" for k in ("door", "input", "output", "event")}
         self.paths["unlock"] = cfg.get("unlock_path") or ""
+        self.probes: dict[str, str] = {}               # path -> what the server answered (for diagnosis)
+        self.listed: set[str] = set()                  # endpoints the server itself mentions
+        self.root_text = ""
 
     async def __aenter__(self):
         if not self.host:
@@ -294,7 +334,11 @@ class ApolloClient:
 
     async def request(self, method, path, **kw):
         auth = (self.user, self.pw) if self.auth_mode == "basic" and self.user else None
-        return await self.c.request(method, path, auth=auth, headers=self._headers(), **kw)
+        r = await self.c.request(method, path, auth=auth, headers=self._headers(), **kw)
+        if method == "GET":
+            ct = (r.headers.get("content-type") or "").split(";")[0] or "no type"
+            self.probes[path] = f"{r.status_code} {ct} {len(r.content)} B"
+        return r
 
     async def connect(self):
         try:
@@ -353,6 +397,7 @@ class ApolloClient:
 
     # ---------------------------------------------------------------- discovery
     async def discover(self):
+        await self._index_pages()
         spec = None
         for p in APOLLO_SPECS:
             try:
@@ -365,8 +410,53 @@ class ApolloClient:
         if spec:
             n = self._from_spec(spec)
             self.step(True, f"Read the API description ({n} endpoints)")
+        elif self.listed:
+            self._from_spec({"paths": {p: {"get": {}, "post": {}} for p in self.listed}})
+            self.step(True, f"The server lists {len(self.listed)} endpoint(s): " + ", ".join(sorted(self.listed)[:12])
+                      + ("…" if len(self.listed) > 12 else ""))
         else:
             self.step(True, "The server publishes no API description - trying the usual endpoints")
+
+    async def _index_pages(self):
+        """Root page, OData service document / $metadata, ASP.NET or WCF help pages: collect endpoint names."""
+        for p in APOLLO_INDEX:
+            try:
+                r = await self.request("GET", p)
+            except httpx.HTTPError:
+                continue
+            if r.status_code != 200:
+                continue
+            text = r.text[:400000]
+            if p == "/api":
+                self.root_text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()[:200]
+            self.listed |= api_paths_in(text)
+
+    @staticmethod
+    def rows_for(kind, data) -> list:
+        """The rows of one kind in an answer: a plain list, a wrapped list, or a list inside a configuration object."""
+        if isinstance(data, list):
+            return data
+        if not isinstance(data, dict):
+            return []
+        wrapped = _as_list(data)
+        if wrapped and wrapped is not None and not (len(wrapped) == 1 and wrapped[0] is data):
+            return wrapped
+        words = APOLLO_KINDS[kind]
+        for k, v in data.items():                         # configuration: {"Readers": [...], "Inputs": [...]}
+            if isinstance(v, list) and any(w in k.lower() for w in words):
+                if kind == "input" and "output" in k.lower():
+                    continue
+                return v
+        for v in data.values():                            # one level deeper
+            if isinstance(v, dict):
+                rows = ApolloClient.rows_for(kind, v)
+                if rows:
+                    return rows
+        return []
+
+    def diagnosis(self) -> str:
+        shown = list(self.probes.items())[:40]
+        return "; ".join(f"{p} → {a}" for p, a in shown)
 
     def _from_spec(self, spec) -> int:
         base = (spec.get("basePath") or "").rstrip("/")
@@ -390,7 +480,7 @@ class ApolloClient:
         return len(paths)
 
     async def fetch(self, kind) -> list[dict]:
-        tried = [self.paths[kind]] if self.paths.get(kind) else APOLLO_CANDIDATES[kind]
+        tried = [self.paths[kind]] if self.paths.get(kind) else APOLLO_CANDIDATES[kind] + APOLLO_CONFIG
         for path in tried:
             try:
                 r = await self.request("GET", path)
@@ -404,8 +494,10 @@ class ApolloClient:
             if r.status_code != 200:
                 continue
             try:
-                rows = _as_list(r.json())
+                rows = self.rows_for(kind, r.json())
             except ValueError:
+                continue
+            if not rows and path in APOLLO_CONFIG:
                 continue
             items = []
             for row in rows:
@@ -442,8 +534,10 @@ async def apollo_test(cfg: dict) -> dict:
             for kind, label in (("door", "doors"), ("input", "inputs"), ("output", "outputs")):
                 found[kind] = await a.fetch(kind)
                 a.step(bool(found[kind]), f"{len(found[kind])} {label}" + (f" ({a.paths[kind]})" if a.paths[kind] else " - no list found"))
-            if a.auth_mode == "basic":
+            if a.auth_mode == "basic" and any(found.values()):
                 a.step(True, f"Logged in as {a.user} (basic login)")
+            elif a.auth_mode == "basic":
+                a.step(False, "The API did not ask for a login on its start page - its own login method was not recognised")
             await a.fetch("event") if not a.paths.get("event") else None
             a.step(bool(a.paths.get("event")), "Live events: " + (a.paths["event"] or "no event list found - events can be pushed to Ellalon instead"))
             a.step(bool(a.paths.get("unlock")), "Door unlock: " + (a.paths["unlock"] or "not found (set it under Advanced)"))
@@ -453,8 +547,11 @@ async def apollo_test(cfg: dict) -> dict:
         devices = found["door"] + found["input"] + found["output"]
         ok = bool(devices)
         if not ok:
-            a.step(False, "Connected, but no doors, inputs or outputs were found. Set the endpoint paths under "
-                          "Advanced (see the API documentation on the APACS server).")
+            if a.root_text:
+                a.step(False, f"The API's start page says: {a.root_text}")
+            a.step(False, "What the server answered: " + a.diagnosis())
+            a.step(False, "Connected, but no doors, inputs or outputs were found. Send this list to support, or set the "
+                          "endpoint paths under Advanced (from the API documentation on the APACS server).")
         return {"ok": ok, "steps": a.steps, "devices": devices, "found": a.discovered()}
 
 

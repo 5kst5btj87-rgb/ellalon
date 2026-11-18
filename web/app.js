@@ -17,6 +17,26 @@ async function api(path, opts = {}) {
 }
 const mod = (name, path, opts) => api(`/modules/${name}${path}`, opts);
 
+// In-page questions and messages. The browser's confirm()/prompt()/alert() are not used: a browser can be
+// told to block them for a page ("don't allow more dialogs"), and then buttons silently do nothing.
+function ask(text, { input = null, placeholder = "", ok = "OK", danger = false, cancel = "Cancel" } = {}) {
+  return new Promise((resolve) => {
+    const d = $("#askDialog"), inp = $("#askInput"), okBtn = $("#askOk"), no = input === null ? false : null;
+    $("#askText").textContent = text;
+    inp.classList.toggle("hidden", input === null); inp.value = input ?? ""; inp.placeholder = placeholder;
+    okBtn.textContent = ok; okBtn.className = danger ? "danger" : "";
+    $("#askCancel").textContent = cancel || ""; $("#askCancel").classList.toggle("hidden", cancel === null);
+    let answered = false;
+    const done = (v) => { if (answered) return; answered = true; d.close(); resolve(v); };
+    $("#askForm").onsubmit = (e) => { e.preventDefault(); done(input === null ? true : inp.value); };
+    $("#askCancel").onclick = () => done(no);
+    d.onclose = () => done(no);                       // Esc
+    d.showModal(); (input === null ? okBtn : inp).focus();
+  });
+}
+const askText = (text, value = "", opts = {}) => ask(text, { ...opts, input: value });
+const notify = (text) => ask(text, { cancel: null });
+
 // ---------------------------------------------------------------- auth
 $("#loginForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -179,7 +199,7 @@ function applyWall(layout, name) {
   if (name !== undefined) { wallLayout = name; localStorage.setItem("ellalon_wall_layout", name); }
   wallChanged(); fillLayoutSel();
 }
-$("#wallClear").onclick = () => { if (wallNow().some(Boolean) && confirm("Remove all cameras from the wall?")) { wallTiles = []; wallChanged(); } };
+$("#wallClear").onclick = async () => { if (wallNow().some(Boolean) && await ask("Remove all cameras from the wall?", { ok: "Clear wall" })) { wallTiles = []; wallChanged(); } };
 
 // ---- camera list (left side)
 const sideHidden = () => localStorage.getItem("ellalon_wall_side") === "hidden";
@@ -247,15 +267,15 @@ async function saveLayout(name) {
   } catch (err) { layoutMsg("Could not save: " + errText(err), true); }
 }
 $("#layoutSave").onclick = () => wallLayout && saveLayout(wallLayout);
-$("#layoutSaveAs").onclick = () => {
-  const name = (prompt("Name for this layout:", wallLayout || "") || "").trim();
+$("#layoutSaveAs").onclick = async () => {
+  const name = ((await askText("Name for this layout:", wallLayout || "", { ok: "Save" })) || "").trim();
   if (!name) return;
   if (/[\/\\?#%]/.test(name) || name.length > 60) return layoutMsg("Use a name up to 60 characters without / \\ ? # %", true);
-  if (wallLayouts.some((l) => l.name === name) && name !== wallLayout && !confirm(`A layout called "${name}" exists. Replace it?`)) return;
+  if (wallLayouts.some((l) => l.name === name) && name !== wallLayout && !(await ask(`A layout called "${name}" exists. Replace it?`, { ok: "Replace" }))) return;
   saveLayout(name);
 };
 $("#layoutDel").onclick = async () => {
-  if (!wallLayout || !confirm(`Delete the saved layout "${wallLayout}"? The wall itself stays as it is.`)) return;
+  if (!wallLayout || !(await ask(`Delete the saved layout "${wallLayout}"? The wall itself stays as it is.`, { ok: "Delete", danger: true }))) return;
   try { await mod("videowall", `/layouts/${encodeURIComponent(wallLayout)}`, { method: "DELETE" }); wallLayout = ""; localStorage.setItem("ellalon_wall_layout", ""); await loadLayouts(); layoutMsg("Layout deleted"); }
   catch (err) { layoutMsg(errText(err), true); }
 };
@@ -305,13 +325,13 @@ function incSelUi() {
 }
 $("#incSelAll").onchange = () => { incSelected.clear(); if ($("#incSelAll").checked) incRows.filter((i) => i.status !== "closed").forEach((i) => incSelected.add(i.id)); loadIncidents(); };
 async function incBulk(body) {
-  try { await mod("c2", "/incidents/bulk", { method: "POST", body }); } catch (err) { alert(errText(err)); }
+  try { await mod("c2", "/incidents/bulk", { method: "POST", body }); } catch (err) { notify(errText(err)); }
   incSelected.clear(); loadIncidents();
 }
 $("#incAckAll").onclick = () => incBulk({ ids: [], status: "acknowledged" });
-$("#incCloseSel").onclick = () => { const note = prompt(`Closing note for ${incSelected.size} alarm(s) (optional):`); if (note !== null) incBulk({ ids: [...incSelected], status: "closed", note }); };
+$("#incCloseSel").onclick = async () => { const note = await askText(`Closing note for ${incSelected.size} alarm(s) (optional):`, "", { ok: "Close alarms" }); if (note !== null) incBulk({ ids: [...incSelected], status: "closed", note }); };
 window.incSet = async (id, status) => {
-  const note = status === "closed" ? prompt("Closing note (optional):") : "";
+  const note = status === "closed" ? await askText("Closing note (optional):", "", { ok: "Close alarm", placeholder: "e.g. checked, false alarm" }) : "";
   if (note === null) return;
   await mod("c2", `/incidents/${id}`, { method: "PATCH", body: { status, note } }); loadIncidents();
 };
@@ -924,18 +944,18 @@ function camSelUi() {
 }
 $("#camSelAll").onchange = () => { camSelected.clear(); if ($("#camSelAll").checked) cameras.forEach((c) => camSelected.add(c.id)); loadCameras(); };
 async function deleteCameras(body, what) {
-  try { const r = await api("/api/cameras/delete", { method: "POST", body }); camSelected.clear(); alert(`Deleted ${r.deleted} camera(s).`); }
-  catch (err) { alert(errText(err)); }
+  try { const r = await api("/api/cameras/delete", { method: "POST", body }); camSelected.clear(); notify(`Deleted ${r.deleted} camera(s).`); }
+  catch (err) { notify(errText(err)); }
   loadCameras();
 }
-$("#camDelSel").onclick = () => {
+$("#camDelSel").onclick = async () => {
   const names = cameras.filter((c) => camSelected.has(c.id)).map((c) => c.name);
-  if (confirm(`Delete ${names.length} camera(s)?\n\n${names.slice(0, 15).join("\n")}${names.length > 15 ? "\n..." : ""}\n\nRecordings already saved are kept.`))
+  if (await ask(`Delete ${names.length} camera(s)?\n\n${names.slice(0, 15).join("\n")}${names.length > 15 ? "\n..." : ""}\n\nRecordings already saved are kept.`, { ok: "Delete", danger: true }))
     deleteCameras({ ids: [...camSelected] });
 };
-$("#camDelAll").onclick = () => {
+$("#camDelAll").onclick = async () => {
   if (!cameras.length) return;
-  const t = prompt(`Delete ALL ${cameras.length} cameras? Recordings already saved are kept.\nType DELETE to confirm:`);
+  const t = await askText(`Delete ALL ${cameras.length} cameras? Recordings already saved are kept.\nType DELETE to confirm:`, "", { ok: "Delete all", danger: true, placeholder: "DELETE" });
   if (t && t.trim().toUpperCase() === "DELETE") deleteCameras({ all: true });
 };
 
@@ -991,7 +1011,11 @@ $("#discAdd").onclick = async () => {
   loadCameras();
 };
 
-window.delCam = async (id) => { if (confirm("Delete camera?")) { await api(`/api/cameras/${id}`, { method: "DELETE" }); loadCameras(); } };
+window.delCam = async (id) => {
+  if (!(await ask("Delete this camera? Recordings already saved are kept.", { ok: "Delete", danger: true }))) return;
+  try { await api(`/api/cameras/${id}`, { method: "DELETE" }); } catch (err) { notify(errText(err)); }
+  loadCameras();
+};
 
 // ---------------------------------------------------------------- integrations (3rd-party systems)
 let intTypes = null, intSystems = [], intDevices = [], intEditing = null, linkDevice = null, intTimer = null;
@@ -1157,7 +1181,12 @@ $("#intTest").onclick = async () => {
   } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
   btn.disabled = false;
 };
-window.intDelete = async (sid) => { if (confirm("Delete this system and its devices?")) { await imod(`/systems/${sid}`, { method: "DELETE" }); loadIntegrations(); } };
+window.intDelete = async (sid) => {
+  const s = intSystems.find((x) => x.id === sid);
+  if (!(await ask(`Delete "${s?.name || sid}" and its imported devices?`, { ok: "Delete", danger: true }))) return;
+  try { await imod(`/systems/${sid}`, { method: "DELETE" }); } catch (err) { notify(errText(err)); }
+  loadIntegrations();
+};
 window.intReconnect = async (sid) => { await imod(`/systems/${sid}/reconnect`, { method: "POST" }); loadIntegrations(); setTimeout(loadIntegrations, 4000); };
 $("#intCsv").onclick = () => {
   const f = $("#importForm"); f.reset(); f.dataset.sid = intEditing.id; $("#importMsg").textContent = "";
@@ -1166,8 +1195,8 @@ $("#intCsv").onclick = () => {
 window.intImport = async (sid) => {
   const s = intSystems.find((x) => x.id === sid);
   if (s.type === "apollo") { intEdit(sid); $("#intTest").click(); return; }    // test, then choose what to import
-  try { const r = await imod(`/systems/${sid}/import`, { method: "POST", body: {} }); alert(`Imported ${r.imported} devices`); loadIntegrations(); }
-  catch (err) { alert(errText(err)); }
+  try { const r = await imod(`/systems/${sid}/import`, { method: "POST", body: {} }); notify(`Imported ${r.imported} devices`); loadIntegrations(); }
+  catch (err) { notify(errText(err)); }
 };
 $("#importForm").onsubmit = async (e) => {
   e.preventDefault(); const f = e.target, msg = $("#importMsg"); msg.className = "muted"; msg.textContent = "Importing…";
@@ -1177,9 +1206,9 @@ $("#importForm").onsubmit = async (e) => {
   } catch (err) { msg.className = "err"; msg.textContent = errText(err); }
 };
 window.intAct = async (id, action) => {
-  if (["disarm", "unlock", "bypass"].includes(action) && !confirm(`${ACTION_LABEL[action]} - are you sure?`)) return;
+  if (["disarm", "unlock", "bypass"].includes(action) && !(await ask(`${ACTION_LABEL[action]} - are you sure?`, { ok: ACTION_LABEL[action] }))) return;
   try { await imod(`/devices/${id}/action`, { method: "POST", body: { action } }); refreshIntegrationsSoon(); }
-  catch (err) { alert(errText(err)); }
+  catch (err) { notify(errText(err)); }
 };
 window.intLink = (id) => {
   linkDevice = intDevices.find((d) => d.id === decodeURIComponent(id));
@@ -1191,7 +1220,7 @@ $("#linkForm").onsubmit = async (e) => {
   e.preventDefault();
   const ids = [...$("#linkCams").querySelectorAll("input:checked")].map((i) => +i.value);
   try { await imod(`/devices/${encodeURIComponent(linkDevice.id)}/cameras`, { method: "PUT", body: { cameras: ids } }); $("#linkDialog").close(); loadIntegrations(); }
-  catch (err) { alert(errText(err)); }
+  catch (err) { notify(errText(err)); }
 };
 
 // ---------------------------------------------------------------- storage
@@ -1267,9 +1296,9 @@ document.querySelectorAll("[data-copy]").forEach((b) => (b.onclick = async () =>
 }));
 window.recInstall = async (id) => {
   const s = storages.find((x) => x.id === id);
-  if (s.recorder?.registered && !confirm("Create a new pairing code? Installing it on a machine replaces the current recording server for this storage.")) return;
+  if (s.recorder?.registered && !(await ask("Create a new pairing code? Installing it on a machine replaces the current recording server for this storage.", { ok: "New code" }))) return;
   try { const r = await api(`/api/storage/${id}/pairing`, { method: "POST" }); showInstall(s.name, r.code, r.code_expires); }
-  catch (err) { alert(errText(err)); }
+  catch (err) { notify(errText(err)); }
 };
 function stTypeUi() {
   const t = $("#stType").value, f = $("#stForm");
@@ -1329,11 +1358,11 @@ $("#stForm").onsubmit = async (e) => {
 };
 window.stDefault = async (id) => {
   try { await api(`/api/storage/${id}/default`, { method: "POST" }); loadStorageTab(); setTimeout(loadStorageTab, 20000); }
-  catch (err) { alert(errText(err)); }
+  catch (err) { notify(errText(err)); }
 };
 window.stDelete = async (id) => {
-  if (!confirm("Delete this storage? Recordings already saved on it are not deleted.")) return;
-  try { await api(`/api/storage/${id}`, { method: "DELETE" }); loadStorageTab(); } catch (err) { alert(errText(err)); }
+  if (!(await ask("Delete this storage? Recordings already saved on it are not deleted.", { ok: "Delete", danger: true }))) return;
+  try { await api(`/api/storage/${id}`, { method: "DELETE" }); loadStorageTab(); } catch (err) { notify(errText(err)); }
 };
 
 // ---------------------------------------------------------------- system / modules
@@ -1353,7 +1382,7 @@ async function loadModules() {
       ${m.url ? `<a class="muted" href="${m.url}docs" target="_blank">API</a>` : ""}
     </div></div>`).join("");
 }
-window.modAct = async (n, a) => { try { await api(`/api/modules/${n}/${a}`, { method: "POST" }); } catch (e) { alert(e.message); } loadModules(); };
+window.modAct = async (n, a) => { try { await api(`/api/modules/${n}/${a}`, { method: "POST" }); } catch (e) { notify(e.message); } loadModules(); };
 window.modLogs = async (n) => { const l = $("#logs"); l.classList.remove("hidden"); l.textContent = (await api(`/api/modules/${n}/logs?tail=300`)).logs; l.scrollTop = l.scrollHeight; };
 
 // ---------------------------------------------------------------- change password

@@ -370,6 +370,12 @@
   <button class="ghost">Cancel</button> <button type="button" id="anSave">Save</button>
 </form></dialog>
 
+<dialog id="askDialog" class="ask"><form id="askForm" method="dialog">
+  <p id="askText"></p>
+  <input id="askInput" class="hidden" autocomplete="off">
+  <div class="row"><button type="button" class="ghost" id="askCancel">Cancel</button> <button id="askOk">OK</button></div>
+</form></dialog>
+
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>
   <div class="stack">
     <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>
