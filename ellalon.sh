@@ -30,8 +30,9 @@ case "${1:-help}" in
     docker compose build core
     for d in modules/*/; do
       m=$(basename "$d")
-      if [[ "${2:-}" == "--all" ]] || grep -q '^autostart: true' "$d/module.yaml"; then
-        build_module "$m"
+      if [[ "${2:-}" == "--all" ]] || grep -q '^autostart: true' "$d/module.yaml" \
+         || [[ -n "$(docker images -q "ellalon/$m" 2>/dev/null)" ]]; then
+        build_module "$m"       # standard, or optional but built before (keep it up to date)
       else
         echo "   $m: optional, skipped (build later with: ellalon build $m)"
       fi

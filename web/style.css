@@ -102,3 +102,27 @@ label.inline{display:inline-flex;align-items:center;gap:6px}
 .wall.focus .tile .tclose{display:none}
 .tile{cursor:pointer}
 .brand .build{font-size:10px;font-weight:400;letter-spacing:0;color:var(--muted);margin-left:4px}
+
+/* analytics editor */
+dialog.xwide{width:min(1200px,96vw)}
+.anTop{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+.anGrid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:14px}
+@media (max-width:900px){.anGrid{grid-template-columns:1fr}}
+.anStage{position:relative;background:#000;border-radius:6px;overflow:hidden;width:100%;min-height:160px}
+.anStage img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill}
+.anStage canvas{position:absolute;inset:0;width:100%;height:100%}
+.anStage #anNoImg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+.anSide{display:flex;flex-direction:column;gap:8px;max-height:72vh;overflow:auto}
+.anRule{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;cursor:pointer}
+.anRule.sel{border-color:var(--accent);background:#ffffff0d}.anRule .grow{flex:1;min-width:0}
+.anRule .sw{width:12px;height:12px;border-radius:3px;flex:none}
+.anEdit{border:1px solid var(--line);border-radius:6px;padding:8px;display:grid;gap:6px}
+.fgrid2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.incsnap{float:left;width:72px;height:42px;object-fit:cover;border-radius:3px;margin-right:8px}
+.anGrid{grid-template-columns:minmax(0,1fr) 370px}
+.anSide,.anEdit,.fgrid2>*{min-width:0}
+.anEdit input:not([type=checkbox]),.anEdit select{width:100%;min-width:0;box-sizing:border-box}
+.anEdit .checks{display:flex;flex-wrap:wrap;gap:4px 12px}
+.anEdit .checks label{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.anEdit .checks select{width:auto}
+.anEdit .row{display:flex;flex-wrap:wrap;gap:6px}

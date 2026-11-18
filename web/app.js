@@ -281,12 +281,12 @@ async function loadIncidents() {
   for (const id of [...incSelected]) if (!incRows.some((i) => i.id === id)) incSelected.delete(id);
   const t = (x) => new Date(x).toLocaleString();
   $("#incidents").innerHTML = incRows.map((i) => {
-    const p = i.event?.payload || {}, extra = [p.target, p.rule, p.region && "region " + p.region].filter(Boolean).join(" · ");
+    const p = i.event?.payload || {}, extra = [p.target, p.rule_type ? null : p.rule, p.region && "region " + p.region, p.detail, p.confidence && Math.round(p.confidence * 100) + "% sure"].filter(Boolean).join(" · ");
     return `<tr class="inc ${esc(i.status)}">
       <td>${i.status !== "closed" ? `<input type="checkbox" class="incSel" value="${esc(i.id)}" ${incSelected.has(i.id) ? "checked" : ""}>` : ""}</td>
       <td>${t(i.created)}${i.count > 1 ? `<div class="muted small">last ${t(i.last)}</div>` : ""}</td>
       <td><span class="sev ${esc(i.severity)}">${esc(SEV_NAME[i.severity] || i.severity)}</span></td>
-      <td>${esc(i.title)}${extra ? `<div class="muted small">${esc(extra)}</div>` : ""}</td>
+      <td>${p.snapshot ? `<a href="${esc(p.snapshot)}" target="_blank" title="Open the snapshot"><img class="incsnap" src="${esc(p.snapshot)}" loading="lazy" alt=""></a>` : ""}${esc(i.title)}${extra ? `<div class="muted small">${esc(extra)}</div>` : ""}</td>
       <td>${esc(camName(i.camera_id))}</td><td>${i.count > 1 ? `<b>${i.count}×</b>` : "1"}</td><td>${esc(i.status)}</td>
       <td class="nowrap">${i.camera_id ? `<button class="ghost" onclick="incLive('${esc(i.id)}')">Live</button> ` : ""}
         ${i.status === "open" ? `<button onclick="incSet('${esc(i.id)}','acknowledged')">Ack</button> ` : ""}
@@ -744,13 +744,177 @@ async function loadCameras() {
   $("#cameras").innerHTML = cameras.map((c) => { const s = c.settings || {}, onv = ["onvif", "flir"].includes(s.brand);
     return `<tr>${admin ? `<td><input type="checkbox" class="camSel" value="${c.id}" ${camSelected.has(c.id) ? "checked" : ""}></td>` : ""}<td>${c.id}</td><td>${esc(c.name)}</td><td>${camStateHtml(c.status)}</td><td>${esc(label(s.brand))}</td><td>${esc(s.ip)}</td><td>${onv ? "–" : esc(s.channel)}</td>
     <td>${esc(c.location || "")}</td><td>${yes(c.substream_url)}</td><td>${yes(c.record)}</td><td>${yes(c.analytics)}</td><td>${yes(c.face_recognition)}</td><td>${evStateHtml(c.events)}</td>
-    <td>${admin ? `<button class="ghost" onclick="editCam(${c.id})">Edit</button> <button class="danger" onclick="delCam(${c.id})">Delete</button>` : ""}</td></tr>`; }).join("")
+    <td class="nowrap">${admin ? `<button class="ghost" onclick="editCam(${c.id})">Edit</button> <button class="ghost" onclick="anOpen(${c.id})">Analytics</button> <button class="danger" onclick="delCam(${c.id})">Delete</button>` : ""}</td></tr>`; }).join("")
     || `<tr><td colspan=14 class="muted">No cameras yet</td></tr>`;
   $("#cameras").querySelectorAll(".camSel").forEach((cb) => (cb.onchange = () => { cb.checked ? camSelected.add(+cb.value) : camSelected.delete(+cb.value); camSelUi(); }));
   camSelUi();
   const n = (k) => cameras.filter((c) => c.status?.state === k).length, bad = cameras.filter((c) => ["offline", "auth", "path", "error"].includes(c.status?.state)).length;
   $("#camSummary").innerHTML = cameras.length ? `<b>${n("online")}</b> online · <b>${bad}</b> with problems${n("checking") ? ` · ${n("checking")} checking` : ""}` : "";
 }
+// ---- video analytics rules (zones, lines) drawn on the camera picture
+const AN_CLASSES = [["person", "People"], ["car", "Cars"], ["truck", "Trucks"], ["bus", "Buses"], ["motorcycle", "Motorcycles"],
+  ["bicycle", "Bicycles"], ["dog", "Dogs"], ["cat", "Cats"], ["backpack", "Bags (backpack)"], ["suitcase", "Suitcases"]];
+const AN_COLORS = ["#ffc850", "#3ca0ff", "#78dc78", "#e678e6", "#ff5a5a", "#50dcff"];
+const AN_TYPE = { intrusion: "Intrusion", line: "Line crossing", loitering: "Loitering", motion: "Motion" };
+let anCam = null, anRules = [], anSel = null, anDrawing = false, anLiveTimer = null;
+$("#arClasses").innerHTML = AN_CLASSES.map(([v, l]) => `<label><input type="checkbox" value="${v}"> ${l}</label>`).join("");
+const anRule = () => anRules.find((r) => r.id === anSel);
+
+window.anOpen = async (cid) => {
+  anCam = cameras.find((c) => c.id === cid); if (!anCam) return;
+  anRules = JSON.parse(JSON.stringify(anCam.analytics_rules || [])); anSel = null; anDrawing = false;
+  $("#anTitle").textContent = `Analytics - ${anCam.name}`; $("#anOn").checked = !!anCam.analytics || !anRules.length;
+  $("#anMsg").textContent = ""; $("#anLive").checked = false; $("#anEdit").classList.add("hidden");
+  $("#anDialog").showModal(); anPicture(); anModuleStatus(); anList(); anDraw();
+};
+$("#anDialog").addEventListener("close", () => { clearInterval(anLiveTimer); anLiveTimer = null; });
+
+async function anModuleStatus() {
+  const st = $("#anStatus"), btn = $("#anStart");
+  try {
+    const m = await api("/api/modules/analytics");
+    const run = m.container?.state === "running";
+    st.className = "small " + (run ? "ok" : "err");
+    st.textContent = run ? "● Analytics app running" : m.enabled ? "● Analytics app starting / not running" + (m.error ? ": " + m.error : "") : "● Analytics app is off";
+    btn.classList.toggle("hidden", run || m.enabled);
+  } catch { st.className = "small err"; st.textContent = "Analytics app not available"; btn.classList.add("hidden"); }
+}
+$("#anStart").onclick = async () => {
+  $("#anStart").disabled = true;
+  try { await api("/api/modules/analytics/enable", { method: "POST" }); }
+  catch (err) {
+    $("#anStatus").className = "small err";
+    $("#anStatus").textContent = /not found|pull/i.test(errText(err))
+      ? "The analytics app is not installed yet. On the server run:  sudo ellalon build analytics   then click Start again."
+      : errText(err);
+  }
+  $("#anStart").disabled = false; setTimeout(anModuleStatus, 1500);
+};
+
+function anPicture(live) {
+  const img = $("#anImg");
+  img.onload = () => { $("#anNoImg").classList.add("hidden"); anDraw(); };
+  img.onerror = () => {
+    if (live) { $("#anHint").textContent = "No live analysis yet for this camera - save with analytics on and wait a few seconds."; return; }
+    $("#anNoImg").classList.remove("hidden"); anDraw();
+  };
+  img.src = live ? `/modules/analytics/cameras/${anCam.id}/preview.jpg?t=${Date.now()}`
+                 : `/modules/streaming/api/frame.jpeg?src=cam_${anCam.id}&t=${Date.now()}`;
+}
+$("#anRefresh").onclick = () => anPicture($("#anLive").checked);
+$("#anLive").onchange = () => {
+  clearInterval(anLiveTimer); anLiveTimer = null;
+  if ($("#anLive").checked) { anPicture(true); anLiveTimer = setInterval(() => anPicture(true), 1000); $("#anHint").textContent = "Green boxes = objects being tracked. Rules shown as saved."; }
+  else { anPicture(false); $("#anHint").textContent = ""; }
+};
+
+function anList() {
+  $("#anRules").innerHTML = anRules.map((r, i) => `<div class="anRule ${r.id === anSel ? "sel" : ""}" onclick="anPick('${r.id}')">
+      <span class="sw" style="background:${AN_COLORS[i % AN_COLORS.length]}"></span>
+      <span class="grow"><b>${esc(r.name || AN_TYPE[r.type])}</b><br><span class="muted small">${AN_TYPE[r.type]}${r.type !== "motion" ? " · " + esc(r.classes.join(", ")) : ""}${r.alarm ? " · alarm " + r.severity : " · events only"}${r.enabled ? "" : " · off"}</span></span>
+      <button type="button" class="ghost small" onclick="event.stopPropagation(); anDel('${r.id}')" title="Delete rule">×</button></div>`).join("")
+    || `<p class="muted small">No rules yet: the camera only reports motion anywhere in the picture. Add a rule to watch for people or vehicles in a zone or crossing a line.</p>`;
+}
+window.anPick = (id) => { anSel = id; anDrawing = false; anFill(); anList(); anDraw(); };
+window.anDel = (id) => { anRules = anRules.filter((r) => r.id !== id); if (anSel === id) { anSel = null; $("#anEdit").classList.add("hidden"); } anList(); anDraw(); };
+$("#anAdd").onclick = () => {
+  const r = { id: Math.random().toString(36).slice(2, 10), name: "", type: "intrusion", enabled: true, zone: [], line: [], direction: "both",
+    classes: ["person"], min_confidence: 0.5, seconds: 10, sensitivity: 2, cooldown: 10, alarm: true, severity: "high" };
+  r.name = `Zone ${anRules.length + 1}`; anRules.push(r); anSel = r.id; anDrawing = true; anFill(); anList(); anDraw();
+};
+function anFill() {
+  const r = anRule(); $("#anEdit").classList.toggle("hidden", !r); if (!r) return;
+  $("#arName").value = r.name; $("#arType").value = r.type; $("#arConf").value = Math.round(r.min_confidence * 100);
+  $("#arSecs").value = r.seconds; $("#arDir").value = r.direction; $("#arSens").value = r.sensitivity; $("#arCool").value = r.cooldown;
+  $("#arAlarm").checked = r.alarm; $("#arSev").value = r.severity; $("#arEnabled").checked = r.enabled;
+  $("#arClasses").querySelectorAll("input").forEach((cb) => (cb.checked = r.classes.includes(cb.value)));
+  anTypeUi();
+}
+function anTypeUi() {
+  const r = anRule(); if (!r) return; const t = r.type;
+  document.querySelectorAll("#anEdit .arObj").forEach((e) => e.classList.toggle("hidden", t === "motion"));
+  document.querySelectorAll("#anEdit .arLoiter").forEach((e) => e.classList.toggle("hidden", t !== "loitering"));
+  document.querySelectorAll("#anEdit .arLine").forEach((e) => e.classList.toggle("hidden", t !== "line"));
+  document.querySelectorAll("#anEdit .arMotion").forEach((e) => e.classList.toggle("hidden", t !== "motion"));
+  $("#arSev").disabled = !$("#arAlarm").checked;
+  const pts = t === "line" ? r.line : r.zone;
+  $("#arDraw").textContent = anDrawing ? "Stop drawing" : t === "line" ? (pts.length ? "Redraw the line" : "Draw the line") : (pts.length ? "Redraw the zone" : "Draw the zone");
+  $("#anHint").textContent = anDrawing
+    ? (t === "line" ? "Click the two ends of the line on the picture." : "Click the corners of the zone; click the first corner (or double-click) to close it.")
+    : (t !== "line" && !r.zone.length ? "No zone drawn = the whole picture." : "");
+}
+["arName", "arConf", "arSecs", "arDir", "arSens", "arCool", "arSev"].forEach((id) => ($("#" + id).oninput = $("#" + id).onchange = anRead));
+["arAlarm", "arEnabled"].forEach((id) => ($("#" + id).onchange = anRead));
+$("#arClasses").onchange = anRead;
+$("#arType").onchange = () => { const r = anRule(); r.type = $("#arType").value; r.zone = []; r.line = []; anDrawing = true;
+  if (/^Zone \d+$|^Line \d+$|^$/.test(r.name)) r.name = `${r.type === "line" ? "Line" : "Zone"} ${anRules.indexOf(r) + 1}`; anFill(); anList(); anDraw(); };
+function anRead() {
+  const r = anRule(); if (!r) return;
+  r.name = $("#arName").value; r.min_confidence = (+$("#arConf").value || 50) / 100; r.seconds = +$("#arSecs").value || 10;
+  r.direction = $("#arDir").value; r.sensitivity = +$("#arSens").value || 2; r.cooldown = +$("#arCool").value || 0;
+  r.alarm = $("#arAlarm").checked; r.severity = $("#arSev").value; r.enabled = $("#arEnabled").checked;
+  r.classes = [...$("#arClasses").querySelectorAll("input:checked")].map((c) => c.value);
+  anTypeUi(); anList(); anDraw();
+}
+$("#arDraw").onclick = () => { const r = anRule(); if (!anDrawing) { if (r.type === "line") r.line = []; else r.zone = []; } anDrawing = !anDrawing; anTypeUi(); anDraw(); };
+$("#arClear").onclick = () => { const r = anRule(); r.zone = []; r.line = []; anDrawing = true; anTypeUi(); anDraw(); };
+$("#arDone").onclick = () => { anDrawing = false; anSel = null; $("#anEdit").classList.add("hidden"); $("#anHint").textContent = ""; anList(); anDraw(); };
+
+const anCanvas = $("#anCanvas");
+function anXY(e) { const b = anCanvas.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)), Math.min(1, Math.max(0, (e.clientY - b.top) / b.height))]; }
+anCanvas.onclick = (e) => {
+  const r = anRule(); if (!r || !anDrawing) return; const p = anXY(e);
+  if (r.type === "line") { r.line.push(p); if (r.line.length >= 2) { r.line = r.line.slice(-2); anDrawing = false; } }
+  else {
+    const f = r.zone[0], b = anCanvas.getBoundingClientRect();
+    if (f && r.zone.length >= 3 && Math.hypot((f[0] - p[0]) * b.width, (f[1] - p[1]) * b.height) < 12) anDrawing = false;
+    else r.zone.push(p);
+  }
+  anTypeUi(); anDraw();
+};
+anCanvas.ondblclick = () => { const r = anRule(); if (r && anDrawing && r.type !== "line" && r.zone.length >= 3) { anDrawing = false; anTypeUi(); anDraw(); } };
+function anDraw() {
+  const img = $("#anImg"), stage = $("#anStage");
+  const w = stage.clientWidth, h = img.naturalWidth && !$("#anNoImg").offsetParent ? Math.round(w * img.naturalHeight / img.naturalWidth) : Math.round(w * 9 / 16);
+  stage.style.height = h + "px"; anCanvas.width = w; anCanvas.height = h;
+  const g = anCanvas.getContext("2d"); g.clearRect(0, 0, w, h);
+  if ($("#anLive").checked) return;                 // live preview already shows the saved rules
+  anRules.forEach((r, i) => {
+    const col = AN_COLORS[i % AN_COLORS.length], sel = r.id === anSel, P = (p) => [p[0] * w, p[1] * h];
+    g.strokeStyle = col; g.fillStyle = col; g.lineWidth = sel ? 3 : 2; g.globalAlpha = r.enabled ? 1 : 0.4;
+    if (r.type === "line" && r.line.length) {
+      const [a, b] = [P(r.line[0]), r.line[1] ? P(r.line[1]) : null];
+      g.beginPath(); g.arc(a[0], a[1], 4, 0, 7); g.fill();
+      if (b) {
+        g.beginPath(); g.moveTo(...a); g.lineTo(...b); g.stroke();
+        const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], d = [b[0] - a[0], b[1] - a[1]], L = Math.hypot(...d) || 1, n = [-d[1] / L * 28, d[0] / L * 28];
+        const arrow = (sgn) => { const e = [m[0] + sgn * n[0], m[1] + sgn * n[1]]; g.beginPath(); g.moveTo(...m); g.lineTo(...e); g.stroke();
+          const ang = Math.atan2(e[1] - m[1], e[0] - m[0]); g.beginPath(); g.moveTo(...e);
+          g.lineTo(e[0] - 9 * Math.cos(ang - 0.5), e[1] - 9 * Math.sin(ang - 0.5)); g.lineTo(e[0] - 9 * Math.cos(ang + 0.5), e[1] - 9 * Math.sin(ang + 0.5)); g.closePath(); g.fill(); };
+        if (r.direction !== "b_to_a") arrow(1); if (r.direction !== "a_to_b") arrow(-1);
+        g.font = "bold 12px sans-serif"; g.fillText("A", a[0] + 6, a[1] - 6); g.fillText("B", b[0] + 6, b[1] - 6);
+      }
+    } else if (r.type !== "line" && r.zone.length) {
+      g.beginPath(); r.zone.forEach((p, k) => (k ? g.lineTo(...P(p)) : g.moveTo(...P(p))));
+      if (!(sel && anDrawing)) { g.closePath(); g.globalAlpha *= 0.2; g.fill(); g.globalAlpha = r.enabled ? 1 : 0.4; }
+      g.stroke(); r.zone.forEach((p) => { g.beginPath(); g.arc(...P(p), sel ? 4 : 2.5, 0, 7); g.fill(); });
+    } else return;
+    const lp = P((r.type === "line" ? r.line : r.zone)[0]);
+    g.globalAlpha = 1; g.font = "bold 13px sans-serif"; g.fillStyle = "#000a"; const t = r.name || AN_TYPE[r.type];
+    g.fillRect(lp[0] + 6, lp[1] + 6, g.measureText(t).width + 8, 18); g.fillStyle = col; g.fillText(t, lp[0] + 10, lp[1] + 19);
+  });
+  anCanvas.style.cursor = anDrawing ? "crosshair" : "default";
+}
+window.addEventListener("resize", () => { if ($("#anDialog").open) anDraw(); });
+$("#anSave").onclick = async () => {
+  const msg = $("#anMsg"), bad = anRules.find((r) => (r.type === "line" && r.line.length !== 2) || (r.type !== "line" && r.zone.length && r.zone.length < 3) || (r.type !== "motion" && !r.classes.length));
+  if (bad) { msg.className = "small err"; msg.textContent = `“${bad.name}”: ${bad.type === "line" ? "draw the line (2 points)" : !bad.classes.length ? "choose at least one object" : "a zone needs at least 3 corners"}`; return; }
+  try { await api(`/api/cameras/${anCam.id}/analytics`, { method: "PUT", body: { enabled: $("#anOn").checked, rules: anRules } }); }
+  catch (err) { msg.className = "small err"; msg.textContent = errText(err); return; }
+  msg.className = "small ok"; msg.textContent = $("#anOn").checked ? "Saved. The analytics app picks up the new rules within a few seconds." : "Saved (analytics off for this camera).";
+  await loadCameras(); anCam = cameras.find((x) => x.id === anCam.id) || anCam;
+};
+
 // ---- select & delete
 const camSelected = new Set();
 function camSelUi() {

@@ -163,3 +163,11 @@ The **Fast playback** tab shows every recording camera; one click (or **Load all
 from the recordings on the recorder (or recording server) without re-encoding, about a second behind live. In the Alarm
 manager, Live view has **60 s before the alarm**. Recordings are now written to disk continuously (not only when each
 5-minute file closes), so the latest minutes are playable and are not lost if a recorder stops.
+
+### Video analytics (people / vehicle detection)
+Optional module. Build it once on the server (`sudo ellalon build analytics`; updates keep it current), then in
+Cameras click **Analytics** on a camera: start the app, draw rules on the camera picture and Save.
+Rules: **Intrusion** (object enters a zone), **Line crossing** (both ways / arrow direction / against), **Loitering**
+(stays N s in a zone), **Motion in an area**. Choose object kinds (people, cars, trucks, ...), certainty, cooldown and
+whether to raise an alarm (priority) in the Alarm manager - alarms carry a snapshot. "Live detection preview" shows what
+the analytics sees. Detector: YOLOX-Tiny (Megvii, Apache-2.0) on CPU, 3 frames/s per camera (ANALYTICS_FPS).

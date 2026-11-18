@@ -324,6 +324,45 @@
   <button class="ghost">Close</button> <button type="button" id="chAdd" class="hidden">Add selected</button>
 </form></dialog>
 
+<dialog id="anDialog" class="xwide"><form id="anForm" method="dialog">
+  <h3 id="anTitle">Analytics</h3>
+  <div class="row anTop"><label class="inline"><input type="checkbox" id="anOn"> Analytics on for this camera</label>
+    <span id="anStatus" class="small"></span> <button type="button" id="anStart" class="hidden">Start the analytics app</button></div>
+  <div class="anGrid">
+    <div>
+      <div class="anStage" id="anStage"><img id="anImg" alt=""><canvas id="anCanvas"></canvas><span id="anNoImg" class="muted small hidden">No picture from the camera</span></div>
+      <div class="row"><button type="button" class="ghost" id="anRefresh">↻ Picture</button>
+        <label class="inline"><input type="checkbox" id="anLive"> Live detection preview</label>
+        <span id="anHint" class="muted small"></span></div>
+    </div>
+    <div class="anSide">
+      <div id="anRules"></div>
+      <button type="button" class="ghost" id="anAdd">+ Add rule</button>
+      <div id="anEdit" class="anEdit hidden">
+        <div class="fgrid2">
+          <label>Name<input id="arName" maxlength="60"></label>
+          <label>Rule<select id="arType"><option value="intrusion">Intrusion - object enters a zone</option><option value="line">Line crossing</option><option value="loitering">Loitering - stays in a zone</option><option value="motion">Motion in an area</option></select></label>
+        </div>
+        <div class="arObj"><b class="small">Objects</b><div class="checks" id="arClasses"></div></div>
+        <div class="fgrid2">
+          <label class="arObj">Minimum certainty (%)<input id="arConf" type="number" min="20" max="95" value="50"></label>
+          <label class="arLoiter">Seconds in the zone<input id="arSecs" type="number" min="1" value="10"></label>
+          <label class="arLine">Direction<select id="arDir"><option value="both">Both directions</option><option value="a_to_b">Only in the arrow's direction</option><option value="b_to_a">Only against the arrow</option></select></label>
+          <label class="arMotion">Sensitivity (% of area moving)<input id="arSens" type="number" min="0.1" max="50" step="0.1" value="2"></label>
+          <label>Wait between alarms (s)<input id="arCool" type="number" min="0" value="10"></label>
+        </div>
+        <div class="checks"><label><input type="checkbox" id="arAlarm" checked> Send to Alarm manager</label>
+          <label>Priority <select id="arSev"><option value="warning">Warning</option><option value="high" selected>High</option><option value="critical">Critical</option></select></label>
+          <label><input type="checkbox" id="arEnabled" checked> Rule on</label></div>
+        <div class="row"><button type="button" class="ghost" id="arDraw"></button> <button type="button" class="ghost" id="arClear">Clear drawing</button>
+          <button type="button" id="arDone">Done</button></div>
+      </div>
+    </div>
+  </div>
+  <p id="anMsg" class="small"></p>
+  <button class="ghost">Cancel</button> <button type="button" id="anSave">Save</button>
+</form></dialog>
+
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>
   <div class="stack">
     <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>

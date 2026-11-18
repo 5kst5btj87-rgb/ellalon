@@ -1,15 +1,17 @@
 name: analytics
 display_name: Video Analytics
-version: 0.1.0
+version: 0.2.0
 category: analytics
-description: Per-camera analytics pipeline. Ships with motion detection; add detectors (YOLO, LPR, ...) as plugins.
-image: ellalon/analytics:0.1.0
+description: Per-camera video analytics - people/vehicle detection (YOLOX), intrusion zones, line crossing, loitering, motion areas. Configure per camera in the Cameras tab.
+image: ellalon/analytics:0.2.0
 autostart: false
 http_port: 8000
 gpu: false          # set true + build a GPU image for deep-learning detectors
 shm_size: 512m
 env:
-  ANALYTICS_FPS: "5"
-  MOTION_MIN_AREA: "0.01"      # fraction of frame
-  MOTION_COOLDOWN: "10"        # seconds between events per camera
-capabilities: [motion, detector-plugins]
+  ANALYTICS_FPS: "3"           # analysed frames per second per camera
+  ANALYTICS_SNAPSHOT_DAYS: "14" # keep event snapshots this long
+capabilities: [motion, objects, intrusion, line-crossing, loitering]
+volumes:
+  - host: data
+    container: /data

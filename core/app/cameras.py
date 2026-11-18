@@ -599,12 +599,20 @@ async def resolve(body: CameraIn) -> dict:
                 meta={k: getattr(body, k) for k in STRUCT})
 
 
+def _keep_extra(c: Camera, data: dict) -> dict:
+    """Saving camera settings must not drop data stored beside them (e.g. analytics rules)."""
+    if "meta" in data:
+        data = {**data, "meta": {**{k: v for k, v in (c.meta or {}).items() if k not in STRUCT}, **data["meta"]}}
+    return data
+
+
 def cam_dict(c: Camera, reveal: bool = True) -> dict:
     d = {k: getattr(c, k) for k in ("id", "name", "url", "substream_url", "location", "record",
                                     "analytics", "face_recognition", "enabled")}
     d["settings"] = settings_of(c).model_dump(exclude={"name", "url", "substream_url"})
     d["status"] = CAM_STATUS.get(c.id, {"state": "checking", "detail": "first check in progress"})
     d["events"] = EVT_STATUS.get(c.id) if (c.meta or {}).get("events_enabled") else None
+    d["analytics_rules"] = (c.meta or {}).get("analytics_rules", [])
     if not reveal:  # only admins and modules see credentials
         d["settings"]["password"] = ""
         d["url"], d["substream_url"] = _strip_creds(d["url"]), _strip_creds(d["substream_url"])
@@ -652,7 +660,7 @@ async def update_camera(cid: int, body: CameraIn, _=Depends(require("admin"))):
         c = s.get(Camera, cid)
         if not c:
             raise HTTPException(404)
-        for k, v in data.items():
+        for k, v in _keep_extra(c, data).items():
             setattr(c, k, v)
         s.commit()
         out = cam_dict(c)
@@ -757,6 +765,64 @@ async def nvr_channels(body: CamSettings, _=Depends(require("admin"))):
     for c in chans:
         c["existing"] = known.get(c["main_path"].lower())
     return {"how": how, "channels": chans}
+
+
+# ---------------------------------------------------------------- video analytics rules
+ANALYTICS_TYPES = ("intrusion", "line", "loitering", "motion")
+OBJECT_CLASSES = ("person", "bicycle", "car", "motorcycle", "bus", "truck", "dog", "cat", "backpack", "suitcase")
+
+
+class AnalyticsRule(BaseModel):
+    id: str
+    name: str = ""
+    type: Literal["intrusion", "line", "loitering", "motion"]
+    enabled: bool = True
+    zone: list[list[float]] = []       # polygon, points 0..1 (x, y) of the picture
+    line: list[list[float]] = []       # two points 0..1
+    direction: Literal["both", "a_to_b", "b_to_a"] = "both"
+    classes: list[str] = ["person"]
+    min_confidence: float = 0.5
+    seconds: float = 10                # loitering: time inside the zone
+    sensitivity: float = 2             # motion: % of the zone that must change
+    cooldown: float = 10
+    alarm: bool = True
+    severity: Literal["warning", "high", "critical"] = "high"
+
+
+class AnalyticsIn(BaseModel):
+    enabled: bool = True
+    rules: list[AnalyticsRule] = []
+
+
+@router.put("/cameras/{cid}/analytics")
+async def save_analytics(cid: int, body: AnalyticsIn, _=Depends(require("admin"))):
+    """Store the camera's analytics rules (zones, lines, objects) and switch analytics on/off."""
+    for r in body.rules:
+        r.name = r.name.strip()[:60] or r.type.capitalize()
+        pts = r.line if r.type == "line" else r.zone
+        if any(len(p) != 2 or not (0 <= p[0] <= 1 and 0 <= p[1] <= 1) for p in pts):
+            raise HTTPException(400, f"{r.name}: points must lie inside the picture")
+        if r.type == "line" and len(r.line) != 2:
+            raise HTTPException(400, f"{r.name}: draw the line with two points")
+        if r.type != "line" and r.zone and len(r.zone) < 3:
+            raise HTTPException(400, f"{r.name}: a zone needs at least 3 points (or none = whole picture)")
+        if r.type != "motion":
+            r.classes = [x for x in r.classes if x in OBJECT_CLASSES] or ["person"]
+        r.min_confidence = min(0.95, max(0.2, r.min_confidence))
+        r.seconds, r.cooldown = max(1, r.seconds), max(0, r.cooldown)
+        r.sensitivity = min(50, max(0.1, r.sensitivity))
+    if len(body.rules) > 20:
+        raise HTTPException(400, "At most 20 rules per camera")
+    with SessionLocal() as s:
+        c = s.get(Camera, cid)
+        if not c:
+            raise HTTPException(404)
+        c.meta = {**(c.meta or {}), "analytics_rules": [r.model_dump() for r in body.rules]}
+        c.analytics = body.enabled
+        s.commit()
+        out = cam_dict(c)
+    await bus.broadcast("camera.changed", {"id": cid, "action": "analytics"})
+    return out
 
 
 class BulkDeleteIn(BaseModel):
@@ -936,7 +1002,7 @@ async def copy_settings(cid: int, body: CopyIn, _=Depends(require("admin"))):
                 failed.append({"id": tid, "error": err})
                 continue
             c = s.get(Camera, tid)
-            for k, v in data.items():
+            for k, v in _keep_extra(c, data).items():
                 setattr(c, k, v)
             updated.append(tid)
         s.commit()
