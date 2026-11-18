@@ -91,6 +91,7 @@
         <input type="date" id="pbDay">
         <button id="pbLoad">Load</button>
       </div>
+      <div id="pbMoment" class="pbmoment hidden"></div>
       <div class="split"><ul id="pbList" class="list"></ul><video id="pbVideo" controls></video></div>
     </div>
 
@@ -117,21 +118,38 @@
       <div class="ansearch">
         <aside class="anfilters">
           <div class="card mapcard">
-            <div class="maphead"><b>Find people</b><button id="asClear" class="ghost small">Clear</button></div>
+            <div class="seg"><button type="button" data-m="live" class="on">Seen live</button><button type="button" data-m="rec">Search recordings</button></div>
+            <div class="maphead"><b>Find people</b><button id="asClear" class="ghost small">Clear tags</button></div>
+            <div class="as-rec hidden">
+              <label class="small">Camera<select id="rsCam"></select></label>
+              <div class="fgrid2"><label class="small">From<input type="datetime-local" id="rsFrom"></label><label class="small">To<input type="datetime-local" id="rsTo"></label></div>
+              <label class="small">Speed<select id="rsMode"><option value="fast">Fast - key frames (about 1 every 1-4 s)</option><option value="thorough">Thorough - every second (slower)</option></select></label>
+              <button id="rsStart">🔍 Search the recordings</button>
+              <p id="rsMsg" class="small"></p>
+            </div>
+            <div class="as-live">
             <label class="small">Cameras<select id="asCam"><option value="">All cameras</option></select></label>
             <label class="small">When<select id="asWhen">
               <option value="3600">Last hour</option><option value="today">Today</option><option value="86400" selected>Last 24 hours</option>
               <option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option><option value="custom">From… to…</option></select></label>
             <div id="asCustom" class="fgrid2 hidden"><label class="small">From<input type="datetime-local" id="asFrom"></label><label class="small">To<input type="datetime-local" id="asTo"></label></div>
+            </div>
             <p class="muted small">Tags: choose what the person looks like. Every group you use must match; two choices in one group mean either.</p>
             <div id="asTags" class="tagpick"></div>
           </div>
         </aside>
         <section class="anresults">
+          <div class="as-live">
           <div class="toolbar"><b id="asCount"></b><span id="asState" class="small muted"></span><span class="grow"></span>
             <button id="asCams" class="ghost small">Tagging per camera…</button><button id="asReload" class="ghost small">↻ Refresh</button></div>
           <div id="asGrid" class="sightings"></div>
           <div class="row" style="justify-content:center"><button id="asMore" class="ghost hidden">Load more</button></div>
+          </div>
+          <div class="as-rec hidden">
+            <div id="rsList" class="rslist"></div>
+            <div id="rsHead" class="toolbar"></div>
+            <div id="rsGrid" class="sightings"></div>
+          </div>
         </section>
       </div>
     </div>
@@ -506,7 +524,7 @@
 <dialog id="asView" class="wide"><form method="dialog">
   <div class="asview"><img id="asViewImg" alt=""><div><h3 id="asViewTitle"></h3><div id="asViewTags" class="tagcloud"></div>
     <p class="muted small">Tags are estimates from the picture; check the recording.</p>
-    <div class="row"><button type="button" id="asViewPb" class="ghost">Open playback</button> <button type="button" id="asViewSame" class="ghost">Find similar (same tags)</button></div></div></div>
+    <div class="row"><button type="button" id="asViewPb">▶ Play this moment</button> <button type="button" id="asViewSame" class="ghost">Find similar (same tags)</button></div></div></div>
   <button class="ghost">Close</button>
 </form></dialog>
 

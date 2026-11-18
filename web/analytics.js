@@ -50,28 +50,21 @@ async function asSearch(more = false) {
   $("#asMore").classList.toggle("hidden", rows.length < 120);
   const t = (x) => new Date(x * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
   $("#asGrid").innerHTML = asRows.map((r, i) => `<div class="card sight" onclick="asOpen(${i})">
-      <img src="${r.image}" alt="" loading="lazy">
+      <img src="${r.image}" alt="" loading="lazy"><button class="playbtn" title="Play this moment" onclick="event.stopPropagation();playAt(${r.camera_id},${r.ts},'Person found')">▶</button>
       <div class="sinfo"><b>${esc(r.camera)}</b><span class="muted small">${t(r.ts)}</span>
       <div class="tagcloud">${r.tags.map((x) => `<span class="tag ${asSel.has(x) ? "hit" : ""}">${asSw(x)}${esc(tagLabelOf(x))}</span>`).join("")}</div></div></div>`).join("")
     || `<p class="muted">Nobody matches. ${asSel.size ? "Try fewer tags or a longer time." : ""}</p>`;
 }
 const asSw = (tag) => { const [g, v] = tag.split(":"); return /_color$/.test(g) ? `<i style="background:${SWATCH[v] || "#777"}"></i>` : ""; };
-window.asOpen = (i) => {
-  const r = asRows[i]; if (!r) return;
+window.asOpen = (i, list) => {
+  const r = (list || asRows)[i]; if (!r) return;
   $("#asViewImg").src = r.image;
   $("#asViewTitle").textContent = `${r.camera} · ${new Date(r.ts * 1000).toLocaleString()}`;
   $("#asViewTags").innerHTML = r.tags.map((x) => {
     const sc = r.scores?.[x.split(":")[0]];
     return `<span class="tag">${asSw(x)}${esc(tagLabelOf(x))}${sc ? ` <small>${Math.round(sc[1] * 100)}%</small>` : ""}</span>`;
   }).join("") || '<span class="muted">No tags (picture too small or unclear)</span>';
-  $("#asViewPb").onclick = () => {
-    $("#asView").close(); show("playback");
-    setTimeout(() => {
-      const d = new Date(r.ts * 1000), day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      if ([...$("#pbCam").options].some((o) => o.value === String(r.camera_id))) $("#pbCam").value = String(r.camera_id);
-      $("#pbDay").value = day; $("#pbLoad").click();
-    }, 80);
-  };
+  $("#asViewPb").onclick = () => { $("#asView").close(); playAt(r.camera_id, r.ts, "Person found"); };
   $("#asViewSame").onclick = () => { asSel = new Set(r.tags); $("#asView").close(); tagPicker($("#asTags"), asSel, asSearchSoon); asSearch(); };
   $("#asView").showModal();
 };
@@ -107,3 +100,66 @@ async function asCamSave(tr) {
   } catch (err) { msg.className = "small err"; msg.textContent = `${c.name}: ${errText(err)}`; }
 }
 $("#asCamDialog").addEventListener("close", () => loadAnalytics());
+
+// ---- search recordings (works on video recorded before tagging was switched on)
+let asMode = "live", rsCur = null, rsTimer = null;
+document.querySelectorAll("#tab-analytics .seg button").forEach((b) => (b.onclick = () => asSetMode(b.dataset.m)));
+function asSetMode(mode) {
+  asMode = mode;
+  document.querySelectorAll("#tab-analytics .seg button").forEach((b) => b.classList.toggle("on", b.dataset.m === mode));
+  document.querySelectorAll("#tab-analytics .as-live").forEach((e) => e.classList.toggle("hidden", mode !== "live"));
+  document.querySelectorAll("#tab-analytics .as-rec").forEach((e) => e.classList.toggle("hidden", mode !== "rec"));
+  if (mode === "rec") rsOpen();
+}
+const localInput = (sec) => { const d = new Date(sec * 1000 - new Date().getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
+function rsOpen() {
+  const keep = $("#rsCam").value;
+  $("#rsCam").innerHTML = cameras.filter((c) => c.record).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("") || `<option value="">No recorded cameras</option>`;
+  if (keep) $("#rsCam").value = keep;
+  if (!$("#rsFrom").value) { const now = Date.now() / 1000; $("#rsFrom").value = localInput(now - 3600); $("#rsTo").value = localInput(now); }
+  rsRefreshList();
+}
+$("#rsStart").onclick = async () => {
+  const msg = $("#rsMsg"), from = new Date($("#rsFrom").value).getTime() / 1000, to = new Date($("#rsTo").value).getTime() / 1000;
+  if (!$("#rsCam").value) { msg.className = "small err"; msg.textContent = "Choose a camera."; return; }
+  if (!(from < to)) { msg.className = "small err"; msg.textContent = "“To” must be after “From”."; return; }
+  msg.className = "small muted"; msg.textContent = "Starting…";
+  try {
+    const s = await mod("analytics", "/scans", { method: "POST", body: { camera_id: +$("#rsCam").value, start: from, end: to, tags: [...asSel], mode: $("#rsMode").value } });
+    msg.textContent = asSel.size ? "" : "No tags chosen: every person in that time will be listed.";
+    rsShow(s.id);
+  } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
+};
+async function rsRefreshList() {
+  let list = [];
+  try { list = await mod("analytics", "/scans"); } catch { $("#rsList").innerHTML = `<p class="err small">The analytics app is not running.</p>`; return; }
+  const t = (x) => new Date(x * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  $("#rsList").innerHTML = list.length ? `<span class="small muted">Searches:</span> ` + list.map((s) => `<button class="chip ${rsCur === s.id ? "on" : ""}" onclick="rsShow('${s.id}')">
+      ${esc(s.camera)} ${t(s.start)}–${new Date(s.end * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ·
+      ${s.state === "running" ? Math.round(s.progress * 100) + "%" : s.state === "done" ? s.results + " found" : esc(s.state)}</button>`).join(" ") : `<p class="muted">Choose a camera, a time and the tags on the left, then “Search the recordings”.</p>`;
+  if (!rsCur && list.length) rsShow(list[0].id);
+}
+window.rsShow = async (id) => {
+  rsCur = id; clearTimeout(rsTimer);
+  let s;
+  try { s = await mod("analytics", `/scans/${id}`); } catch (err) { $("#rsHead").innerHTML = `<span class="err">${esc(errText(err))}</span>`; $("#rsGrid").innerHTML = ""; rsCur = null; return; }
+  const running = s.state === "running" || s.state === "queued", pct = Math.round(s.progress * 100);
+  const t = (x) => new Date(x * 1000).toLocaleString();
+  $("#rsHead").innerHTML = `<div class="rshead"><b>${esc(s.camera)}</b> <span class="muted small">${t(s.start)} → ${t(s.end)} · ${s.mode === "fast" ? "fast" : "thorough"}
+      ${s.tags.length ? " · " + s.tags.map((x) => esc(tagLabelOf(x))).join(", ") : " · everyone"}</span>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <span class="small ${s.state === "error" ? "err" : "muted"}">${s.state === "queued" ? "Waiting for the previous search to finish…" : running ? `Searching… ${pct}% · ${s.people} people looked at · ${s.results.length} match` : s.state === "done" ? `Done · ${s.people} people looked at · ${s.results.length} match` : s.state === "error" ? "Failed: " + esc(s.error) : "Cancelled"}</span>
+    ${running ? `<button class="ghost small" onclick="rsCancel('${s.id}')">Stop</button>` : `<button class="ghost small" onclick="rsDelete('${s.id}')">Remove</button>`}</div>`;
+  rsRows = s.results.map((r) => ({ ...r, camera: s.camera, camera_id: s.camera_id }));
+  const tt = (x) => new Date(x * 1000).toLocaleTimeString();
+  $("#rsGrid").innerHTML = rsRows.map((r, i) => `<div class="card sight" onclick="asOpen(${i}, rsRows)">
+      <img src="${r.image}" alt="" loading="lazy"><button class="playbtn" title="Play this moment" onclick="event.stopPropagation();playAt(${r.camera_id},${r.ts},'Person found in recordings')">▶</button>
+      <div class="sinfo"><b>${tt(r.ts)}</b><span class="muted small">${new Date(r.ts * 1000).toLocaleDateString()}</span>
+      <div class="tagcloud">${r.tags.map((x) => `<span class="tag ${asSel.has(x) ? "hit" : ""}">${asSw(x)}${esc(tagLabelOf(x))}</span>`).join("")}</div></div></div>`).join("")
+    || (running ? "" : `<p class="muted">Nobody matching in that time.${s.mode === "fast" ? " Try “Thorough”, fewer tags, or a longer time." : " Try fewer tags or a longer time."}</p>`);
+  if (running && !$("#tab-analytics").classList.contains("hidden") && asMode === "rec") rsTimer = setTimeout(() => { rsShow(id); rsRefreshList(); }, 2000);
+  else rsRefreshList();
+};
+var rsRows = [];
+window.rsCancel = async (id) => { await mod("analytics", `/scans/${id}/cancel`, { method: "POST" }).catch(() => {}); setTimeout(() => rsShow(id), 600); };
+window.rsDelete = async (id) => { await mod("analytics", `/scans/${id}`, { method: "DELETE" }).catch(() => {}); rsCur = null; $("#rsHead").innerHTML = ""; $("#rsGrid").innerHTML = ""; rsRefreshList(); };

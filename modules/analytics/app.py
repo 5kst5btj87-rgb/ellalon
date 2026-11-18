@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -24,7 +25,9 @@ from fastapi import HTTPException, Query
 from fastapi.responses import FileResponse, Response
 
 from detectors import LABELS, ObjectDetector, RuleEngine, draw_objects, draw_rules
+import scanner as sc
 import tagger as tg
+from pydantic import BaseModel, Field
 from ellalon_sdk import EllalonModule
 
 FPS = float(os.environ.get("ANALYTICS_FPS", "3"))
@@ -36,7 +39,7 @@ SIGHT_DIR = Path(os.environ.get("ANALYTICS_SIGHTINGS", "/data/sightings"))
 SIGHT_DAYS = float(os.environ.get("ANALYTICS_SIGHTING_DAYS", "30"))
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
-m = EllalonModule(version="0.3.0")
+m = EllalonModule(version="0.4.0")
 app = m.app
 workers: dict[int, "Worker"] = {}
 loop: asyncio.AbstractEventLoop | None = None
@@ -126,6 +129,28 @@ class Sightings:
 
 
 sightings: Sightings | None = None
+
+# ---------------------------------------------------------------- searching recordings
+SCAN_DIR = Path(os.environ.get("ANALYTICS_SCANS", "/data/scans"))
+scans: dict[str, "sc.Scan"] = {}
+scan_queue: queue.Queue = queue.Queue()
+
+
+def scan_loop():
+    """Recording searches run one after the other (each one uses a lot of CPU)."""
+    while True:
+        s = scan_queue.get()
+        if s.cancelled:
+            s.state = "cancelled"
+            continue
+        sc.run_scan(s, detector, tagger, tg.regions, m.core_url, m.token, m.log)
+
+
+def forget_old_scans(keep=15):
+    for s in sorted(scans.values(), key=lambda x: x.created)[:-keep]:
+        if s.state in ("done", "error", "cancelled"):
+            scans.pop(s.id, None)
+            shutil.rmtree(s.folder, ignore_errors=True)
 
 
 def load_tagger():
@@ -331,6 +356,8 @@ async def _start():
     except Exception as e:
         m.log.warning("sightings store not available: %s", e)
     threading.Thread(target=tag_loop, daemon=True, name="tagger").start()
+    threading.Thread(target=scan_loop, daemon=True, name="scanner").start()
+    shutil.rmtree(SCAN_DIR, ignore_errors=True)               # results of searches before a restart
     threading.Thread(target=load_tagger, daemon=True, name="tagger-load").start()   # takes a few seconds
 
 
@@ -395,6 +422,78 @@ async def search_sightings(camera: list[int] = Query([]), tag: list[str] = Query
     for r in rows:
         r["labels"] = [tg.tag_label(t) for t in r["tags"]]
     return rows
+
+
+class ScanIn(BaseModel):
+    camera_id: int
+    start: float
+    end: float
+    tags: list[str] = []
+    mode: str = "fast"                     # fast (key frames) | thorough (1 frame per second)
+    min_height: int = Field(70, ge=30, le=400)
+
+
+@app.post("/scans")
+async def start_scan(body: ScanIn):
+    """Search a camera's recordings between start and end (unix times) for people with these tags."""
+    if body.end <= body.start:
+        raise HTTPException(400, "The end must be after the start")
+    if body.end - body.start > 24 * 3600:
+        raise HTTPException(400, "Search at most 24 hours at a time")
+    if tagger is None:
+        raise HTTPException(503, f"People tagging is not available: {tagger_error}")
+    cam = next((c for c in await m.cameras() if c["id"] == body.camera_id), None)
+    if not cam:
+        raise HTTPException(404, "No such camera")
+    tags = [t for t in body.tags if re.fullmatch(r"[a-z_]+:[a-z_]+", t)][:12]
+    s = sc.Scan(SCAN_DIR, cam, body.start, min(body.end, time.time()), tags,
+                "thorough" if body.mode == "thorough" else "fast", body.min_height)
+    s.folder.mkdir(parents=True, exist_ok=True)
+    scans[s.id] = s
+    forget_old_scans()
+    scan_queue.put(s)
+    return s.view()
+
+
+@app.get("/scans")
+async def list_scans():
+    return [{**s.view(), "results": len(s.results)} for s in sorted(scans.values(), key=lambda x: -x.created)]
+
+
+@app.get("/scans/{sid}")
+async def get_scan(sid: str):
+    s = scans.get(sid)
+    if not s:
+        raise HTTPException(404, "This search is gone (the analytics app restarted?)")
+    v = s.view()
+    for r in v["results"]:
+        r["labels"] = [tg.tag_label(t) for t in r["tags"]]
+    return v
+
+
+@app.post("/scans/{sid}/cancel")
+async def cancel_scan(sid: str):
+    s = scans.get(sid)
+    if s:
+        s.cancelled = True
+    return {"ok": True}
+
+
+@app.delete("/scans/{sid}")
+async def delete_scan(sid: str):
+    s = scans.pop(sid, None)
+    if s:
+        s.cancelled = True
+        shutil.rmtree(s.folder, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.get("/scans/{sid}/{name}")
+async def scan_image(sid: str, name: str):
+    s = scans.get(sid)
+    if not s or not re.fullmatch(r"\d{4}\.jpg", name) or not (s.folder / name).is_file():
+        raise HTTPException(404)
+    return FileResponse(s.folder / name, media_type="image/jpeg")
 
 
 @app.get("/sightings/{sid}.jpg")

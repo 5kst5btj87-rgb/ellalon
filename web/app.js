@@ -776,6 +776,26 @@ $("#pbLoad").onclick = async () => {
   } catch { $("#pbList").innerHTML = `<li class="muted">Recorder module not running</li>`; }
 };
 
+// Play the moment something happened: a clip from a few seconds before to a minute after.
+window.playAt = async (cid, ts, what = "") => {
+  show("playback");
+  const cam = cameras.find((c) => c.id === +cid), box = $("#pbMoment");
+  if (!cam) return notify("That camera no longer exists.");
+  const d = new Date(ts * 1000), day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if ([...$("#pbCam").options].some((o) => o.value === String(cam.id))) $("#pbCam").value = String(cam.id);
+  $("#pbDay").value = day; $("#pbLoad").click();
+  box.className = "pbmoment"; box.innerHTML = `⏳ Cutting the clip of ${esc(cam.name)} at ${d.toLocaleTimeString()}…`;
+  if (!storages.length) await loadStorages().catch(() => {});
+  const before = 10, end = Math.floor(Math.min(ts + 50, Date.now() / 1000 - 3)), secs = Math.max(15, Math.round(end - (ts - before)));
+  try {
+    const url = await fetchClip(cam, secs, end), v = $("#pbVideo");
+    v.src = url;
+    v.onloadedmetadata = () => { v.currentTime = Math.max(0, secs - (end - ts) - 3); v.play().catch(() => {}); v.onloadedmetadata = null; };
+    box.innerHTML = `<b>▶ ${esc(what || "Moment")}</b> · ${esc(cam.name)} · ${d.toLocaleString()} <span class="muted small">(starts 3 s before; the clip runs ${before} s before to ${Math.max(0, Math.round(end - ts))} s after)</span>
+      <a class="link small" href="${url}" download="${esc(cam.name)}-${day}-${d.toTimeString().slice(0, 8).replaceAll(":", "")}.mp4">Download clip</a>`;
+  } catch (err) { box.className = "pbmoment err"; box.textContent = `Could not play that moment: ${errText(err)}`; }
+};
+
 // ---------------------------------------------------------------- cameras
 let brands = [], editing = null;
 const COPY_FIELDS = [["brand", "Brand & ports"], ["credentials", "Username & password"], ["substream", "Substream on/off"],

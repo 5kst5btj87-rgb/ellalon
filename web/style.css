@@ -331,3 +331,15 @@ header.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;g
 .asview img{width:100%;border-radius:10px;background:#000}
 .asview .tagcloud{gap:6px}.asview .tag{font-size:13px;padding:4px 9px}
 #arTagPick{max-height:260px;overflow:auto;padding:4px}
+.seg{display:flex;gap:0;margin-bottom:12px;border-radius:10px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--sunken)}
+.seg button{flex:1;border-radius:0;background:#0c1118;color:var(--muted);box-shadow:none;font-weight:600}
+.seg button.on{background:linear-gradient(180deg,#ff8f6e,#e8603d);color:#fff}
+.as-rec label{display:grid;gap:4px;margin-bottom:8px}#rsStart{width:100%;margin:4px 0}
+.card.sight{position:relative}
+.playbtn{position:absolute;top:8px;right:8px;width:34px;height:34px;padding:0;border-radius:50%;font-size:13px;opacity:.9}
+.rslist{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+.rshead{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;width:100%}
+.rshead .bar{grid-column:1/-1;height:8px;border-radius:5px;background:#0c1118;box-shadow:var(--sunken);overflow:hidden}
+.rshead .bar i{display:block;height:100%;background:linear-gradient(90deg,#ff8f6e,#e8603d);transition:width .4s}
+.pbmoment{margin-bottom:10px;padding:10px 14px;border-radius:12px;background:linear-gradient(180deg,#1f2836,#161c26);border:1px solid #2f3a4d;box-shadow:var(--lift);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.anfilters .fgrid2{grid-template-columns:1fr}.anfilters input[type=datetime-local]{width:100%}

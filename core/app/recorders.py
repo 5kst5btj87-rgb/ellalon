@@ -189,7 +189,7 @@ def _agent(sid: str) -> tuple[str, str]:
 
 
 @router.get("/recorders/{sid}/recordings")
-async def recorder_recordings(sid: str, camera: int, day: str | None = None, _=Depends(require("viewer"))):
+async def recorder_recordings(sid: str, camera: int, day: str | None = None, _=Depends(require("viewer", allow_module=True))):
     base, secret = _agent(sid)
     params = {"camera": camera, **({"day": day} if day else {})}
     try:
@@ -226,7 +226,7 @@ async def recorder_clip(sid: str, cid: int, seconds: int = 60, end: float | None
 
 
 @router.get("/recorders/{sid}/files/{cid}/{name}")
-async def recorder_file(sid: str, cid: int, name: str, request: Request, _=Depends(require("viewer"))):
+async def recorder_file(sid: str, cid: int, name: str, request: Request, _=Depends(require("viewer", allow_module=True))):
     if not re.fullmatch(r"\d{8}-\d{6}\.mp4", name):
         raise HTTPException(404)
     base, secret = _agent(sid)
