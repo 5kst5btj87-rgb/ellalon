@@ -47,7 +47,7 @@ document.querySelectorAll("nav a").forEach((a) => (a.onclick = () => show(a.data
 function show(tab) {
   document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== "tab-" + tab));
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, storage: loadStorageTab, playback: loadPlayback }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 
 // ---------------------------------------------------------------- live events
@@ -292,12 +292,31 @@ window.incLive = (id) => {
   $("#liveTitle").textContent = `${i.title}`;
   $("#liveInfo").textContent = `${SEV_NAME[i.severity] || i.severity} · ${i.status} · first ${new Date(i.created).toLocaleString()}${i.count > 1 ? ` · ${i.count} times` : ""}`;
   $("#liveFrame").src = cam ? `/modules/streaming/stream.html?src=cam_${cam.id}&mode=webrtc,mse` : "about:blank";
+  $("#liveFrame").classList.remove("hidden"); $("#liveClip").classList.add("hidden");
+  $("#liveReplay").classList.toggle("hidden", !cam?.record);
+  $("#liveReplay").textContent = "⟲ 60 s before the alarm";
+  $("#liveReplay").onclick = async () => {
+    const b = $("#liveReplay"); b.disabled = true; b.textContent = "Cutting the clip…";
+    try {
+      await loadStorages().catch(() => {});
+      const end = Math.floor(new Date(i.created).getTime() / 1000) + 10;   // 50 s before + 10 s after
+      const url = await fetchClip(cam, 60, end);
+      $("#liveFrame").classList.add("hidden"); $("#liveFrame").src = "about:blank";
+      const v = $("#liveClip"); if (v.src.startsWith("blob:")) URL.revokeObjectURL(v.src);
+      v.src = url; v.classList.remove("hidden"); v.play().catch(() => {});
+      b.textContent = "⟲ Replaying 60 s around the alarm";
+    } catch (err) { b.textContent = err.message; }
+    b.disabled = false;
+  };
   $("#liveAck").classList.toggle("hidden", i.status !== "open"); $("#liveClose").classList.toggle("hidden", i.status === "closed");
   $("#liveAck").onclick = async () => { await incSet(id, "acknowledged"); $("#liveDialog").close(); };
   $("#liveClose").onclick = async () => { await incSet(id, "closed"); $("#liveDialog").close(); };
   $("#liveDialog").showModal();
 };
-$("#liveDialog").onclose = () => ($("#liveFrame").src = "about:blank");
+$("#liveDialog").onclose = () => {
+  $("#liveFrame").src = "about:blank"; const v = $("#liveClip"); v.pause();
+  if (v.src.startsWith("blob:")) URL.revokeObjectURL(v.src); v.removeAttribute("src");
+};
 async function refreshAlarmBadge() {
   try {
     const n = (await mod("c2", "/incidents?status=open")).length, b = $("#alarmBadge");
@@ -322,6 +341,92 @@ function alarmToast(e) {
   $("#toasts").prepend(t); setTimeout(() => t.remove(), 8000);
   while ($("#toasts").children.length > 4) $("#toasts").lastElementChild.remove();
 }
+
+// ---------------------------------------------------------------- fast playback (last N seconds)
+const fpClips = {};                 // camera id -> {url, label}
+function clipPath(cam, secs, endTs) {
+  const sid = cam.settings?.storage_id, q = `seconds=${secs}${endTs ? `&end=${endTs}` : ""}`;
+  return storages.some((s) => s.id === sid && s.type === "recorder")
+    ? `/api/recorders/${encodeURIComponent(sid)}/clip/${cam.id}?${q}` : `/modules/vms-recorder/cameras/${cam.id}/clip?${q}`;
+}
+async function fetchClip(cam, secs, endTs) {
+  const r = await fetch(clipPath(cam, secs, endTs), { headers: { Authorization: "Bearer " + token } });
+  if (!r.ok) {
+    let d = `HTTP ${r.status}`; try { d = (await r.json()).detail || d; } catch {}
+    throw new Error(r.status === 404 && d.startsWith("HTTP") ? "Recorder module not running" : d);
+  }
+  return URL.createObjectURL(await r.blob());
+}
+const fpSecs = () => +$("#fpSecs").value;
+function fpEndTs() {
+  if ($("#fpEndMode").value !== "at" || !$("#fpEnd").value) return null;
+  return Math.floor(new Date($("#fpEnd").value).getTime() / 1000);
+}
+$("#fpEndMode").onchange = () => {
+  const at = $("#fpEndMode").value === "at"; $("#fpEnd").classList.toggle("hidden", !at);
+  if (at && !$("#fpEnd").value) { const d = new Date(Date.now() - 5 * 60000 - new Date().getTimezoneOffset() * 60000); $("#fpEnd").value = d.toISOString().slice(0, 19); }
+  fpButtons();
+};
+$("#fpSecs").onchange = fpButtons;
+$("#fpSearch").oninput = renderFastPb;
+const fpLabel = () => `▶ ${fpSecs() >= 120 ? fpSecs() / 60 + " min" : fpSecs() + " s"}${fpEndTs() ? " before " + new Date(fpEndTs() * 1000).toLocaleTimeString() : ""}`;
+function fpButtons() { document.querySelectorAll(".fpLoad").forEach((b) => (b.textContent = fpLabel())); $("#fpAll").textContent = fpLabel().replace("▶", "▶ Load all:"); }
+async function loadFastPb() {
+  await loadStorages().catch(() => {});
+  try { cameras = await api("/api/cameras"); } catch {}
+  renderFastPb();
+}
+function renderFastPb() {
+  const q = $("#fpSearch").value.trim().toLowerCase();
+  const list = cameras.filter((c) => c.record && (!q || `${c.name} ${c.location || ""}`.toLowerCase().includes(q)));
+  const grid = $("#fpGrid");
+  grid.innerHTML = list.map((c) => `<div class="fptile" data-id="${c.id}">
+      <div class="fphead"><b>${esc(c.name)}</b> <span class="muted small">${esc(c.location || "")}</span></div>
+      <div class="fpvid"><video playsinline controls muted loop></video><span class="fpmsg muted small">Not loaded</span></div>
+      <div class="fpbar"><button class="fpLoad ghost"></button> <a class="fpDl link hidden" download>⬇ Download</a> <span class="fpwhen muted small"></span></div>
+    </div>`).join("") || `<p class="muted">No cameras are recording. Turn on “Record” for a camera in the Cameras tab.</p>`;
+  grid.querySelectorAll(".fptile").forEach((t) => {
+    const id = +t.dataset.id;
+    t.querySelector(".fpLoad").onclick = () => fpLoad(id);
+    if (fpClips[id]) fpShow(t, fpClips[id]);
+  });
+  $("#fpInfo").textContent = `${list.length} recording camera(s)`;
+  fpButtons();
+}
+function fpShow(t, clip) {
+  const v = t.querySelector("video"), dl = t.querySelector(".fpDl");
+  if (v.src !== clip.url) v.src = clip.url;
+  t.querySelector(".fpmsg").classList.add("hidden");
+  dl.href = clip.url; dl.download = clip.file; dl.classList.remove("hidden");
+  t.querySelector(".fpwhen").textContent = clip.label;
+}
+async function fpLoad(id) {
+  const t = $(`.fptile[data-id="${id}"]`), cam = cameras.find((c) => c.id === id); if (!t || !cam) return;
+  const secs = fpSecs(), endTs = fpEndTs(), msg = t.querySelector(".fpmsg"), btn = t.querySelector(".fpLoad");
+  btn.disabled = true; msg.className = "fpmsg muted small"; msg.textContent = "Cutting the clip…";
+  try {
+    const url = await fetchClip(cam, secs, endTs), end = endTs ? new Date(endTs * 1000) : new Date();
+    if (fpClips[id]) URL.revokeObjectURL(fpClips[id].url);
+    const from = new Date(end - secs * 1000), stamp = from.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    fpClips[id] = { url, file: `${cam.name.replace(/[^\w.-]+/g, "_")}_${stamp}.mp4`, label: `${from.toLocaleTimeString()} – ${end.toLocaleTimeString()}` };
+    fpShow(t, fpClips[id]);
+    t.querySelector("video").play().catch(() => {});
+  } catch (err) { msg.className = "fpmsg err small"; msg.textContent = err.message; }
+  btn.disabled = false;
+}
+$("#fpAll").onclick = async () => {
+  const ids = [...document.querySelectorAll(".fptile")].map((t) => +t.dataset.id);
+  $("#fpAll").disabled = true; let next = 0, done = 0;
+  const worker = async () => { while (next < ids.length) { await fpLoad(ids[next++]); $("#fpInfo").textContent = `Loaded ${++done} of ${ids.length}`; } };
+  await Promise.all([worker(), worker(), worker()]);       // 3 at a time
+  $("#fpAll").disabled = false;
+};
+$("#fpPlay").onclick = () => {
+  const vids = [...document.querySelectorAll("#fpGrid video")].filter((v) => v.src);
+  const anyPlaying = vids.some((v) => !v.paused);
+  vids.forEach((v) => (anyPlaying ? v.pause() : v.play().catch(() => {})));
+};
+$("#fpRestart").onclick = () => document.querySelectorAll("#fpGrid video").forEach((v) => { if (v.src) { v.currentTime = 0; v.play().catch(() => {}); } });
 
 // ---------------------------------------------------------------- playback (vms-recorder module)
 function loadPlayback() {

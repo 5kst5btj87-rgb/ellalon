@@ -22,7 +22,7 @@ from ellalon_sdk import EllalonModule
 ROOT = Path("/storage")
 SEGMENT = int(os.environ.get("SEGMENT_SECONDS", "300"))
 
-m = EllalonModule(version="0.2.0")
+m = EllalonModule(version="0.3.0")
 app = m.app
 recorders: dict[int, "Recorder"] = {}
 storages: dict[str, dict] = {}      # id -> settings from core (enabled local / network storages)
@@ -70,7 +70,7 @@ class Recorder:
             "-i", self.cam["url"], "-map", "0:v", "-map", "0:a?", "-c", "copy",
             "-f", "segment", "-segment_time", str(SEGMENT), "-segment_atclocktime", "1",
             "-reset_timestamps", "1", "-strftime", "1", "-segment_format", "mp4",
-            "-segment_format_options", "movflags=+frag_keyframe+empty_moov",
+            "-segment_format_options", "movflags=+frag_keyframe+empty_moov:flush_packets=1",
             str(out / "%Y%m%d-%H%M%S.mp4"),
         ]
 
@@ -258,3 +258,64 @@ def get_recording(sid: str, cid: int, name: str):
     if ROOT.resolve() not in f.parents or not f.is_file():
         raise HTTPException(404)
     return FileResponse(f, media_type="video/mp4")
+
+
+# ---------------------------------------------------------------- quick clips ("last 60 seconds")
+class NoRecording(Exception):
+    pass
+
+
+def cut_clip(dirs, seconds, end_ts=None, ffmpeg="ffmpeg", segment=300, workdir=None):
+    """Cut [end - seconds, end] out of the 5-minute segments (the one still being written included)
+    without re-encoding. Returns the path of a temporary MP4 the caller must delete."""
+    import subprocess
+    import tempfile
+    from datetime import datetime as _dt, timedelta as _td
+    seconds = max(5, min(int(seconds), 600))
+    end = _dt.fromtimestamp(float(end_ts)) if end_ts else _dt.now()     # same clock as the file names
+    start = end - _td(seconds=seconds)
+    segs = []
+    for d in dirs:
+        for f in (d.glob("*.mp4") if d.is_dir() else []):
+            try:
+                segs.append((_dt.strptime(f.stem, "%Y%m%d-%H%M%S"), f))
+            except ValueError:
+                pass
+    segs.sort()
+    pick = []
+    for i, (t, f) in enumerate(segs):
+        nxt = min(segs[i + 1][0] if i + 1 < len(segs) else _dt.max, t + _td(seconds=segment + 5))
+        if t < end and nxt > start and f.stat().st_size > 0:
+            pick.append((t, f))
+    if not pick:
+        raise NoRecording(f"No recording between {start:%H:%M:%S} and {end:%H:%M:%S}")
+    offset = max(0.0, (start - pick[0][0]).total_seconds())
+    tmp = Path(tempfile.mkdtemp(prefix="clip-", dir=workdir))
+    lst, out = tmp / "list.txt", tmp / "clip.mp4"
+    lst.write_text("".join("file '" + str(f).replace("'", "'\\''") + "'\n" for _, f in [(t, f.resolve()) for t, f in pick]))
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "concat", "-safe", "0",
+           "-ss", f"{offset:.2f}", "-i", str(lst), "-t", str(seconds), "-map", "0:v", "-map", "0:a?",
+           "-c", "copy", "-movflags", "+faststart", "-y", str(out)]
+    r = subprocess.run(cmd, capture_output=True, timeout=120)
+    lst.unlink(missing_ok=True)
+    if r.returncode != 0 or not out.is_file() or out.stat().st_size < 1000:
+        out.unlink(missing_ok=True)
+        tmp.rmdir()
+        raise NoRecording("Could not cut the clip: " + (r.stderr.decode(errors="replace").strip()[-200:] or "empty result"))
+    return out
+
+
+@app.get("/cameras/{cid}/clip")
+async def clip(cid: int, seconds: int = 60, end: float | None = None):
+    """MP4 of the last `seconds` (or the `seconds` before unix time `end`) of a camera."""
+    from starlette.background import BackgroundTask
+    dirs = [d / str(cid) for d in ROOT.iterdir()] if ROOT.is_dir() else []
+    try:
+        out = await asyncio.to_thread(cut_clip, dirs, seconds, end, "ffmpeg", SEGMENT)
+    except NoRecording as e:
+        raise HTTPException(404, str(e))
+
+    def cleanup():
+        out.unlink(missing_ok=True)
+        out.parent.rmdir()
+    return FileResponse(out, media_type="video/mp4", filename=f"camera{cid}-clip.mp4", background=BackgroundTask(cleanup))

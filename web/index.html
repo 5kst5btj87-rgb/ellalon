@@ -25,6 +25,7 @@
       <a data-tab="wall" class="active">Video wall</a>
       <a data-tab="incidents">Alarm manager <span id="alarmBadge" class="badge hidden"></span></a>
       <a data-tab="events">Events</a>
+      <a data-tab="fastpb">Fast playback</a>
       <a data-tab="playback">Playback</a>
       <a data-tab="cameras">Cameras</a>
       <a data-tab="integrations">Integrations</a>
@@ -72,6 +73,20 @@
     <div id="tab-events" class="tab hidden">
       <div class="toolbar"><span class="dot" id="wsDot"></span><span class="muted">Live event stream</span></div>
       <table><thead><tr><th>Time</th><th>Source</th><th>Type</th><th>Severity</th><th>Camera</th><th>Details</th></tr></thead><tbody id="events"></tbody></table>
+    </div>
+
+    <div id="tab-fastpb" class="tab hidden">
+      <div class="toolbar">
+        <label>Length <select id="fpSecs"><option value="30">30 s</option><option value="60" selected>60 s</option><option value="120">2 min</option><option value="300">5 min</option></select></label>
+        <label>Ending <select id="fpEndMode"><option value="now" selected>now</option><option value="at">at…</option></select></label>
+        <input type="datetime-local" id="fpEnd" class="hidden" step="1">
+        <input id="fpSearch" placeholder="Search cameras" autocomplete="off">
+        <button id="fpAll">▶ Load all cameras</button>
+        <button id="fpPlay" class="ghost">Play / pause all</button>
+        <button id="fpRestart" class="ghost">⟲ Restart all</button>
+        <span id="fpInfo" class="muted small"></span>
+      </div>
+      <div id="fpGrid" class="fpgrid"></div>
     </div>
 
     <div id="tab-playback" class="tab hidden">
@@ -294,9 +309,9 @@
 
 <dialog id="liveDialog" class="wide"><form method="dialog">
   <h3 id="liveTitle"></h3>
-  <div class="livebox"><iframe id="liveFrame" allow="autoplay; fullscreen"></iframe></div>
+  <div class="livebox"><iframe id="liveFrame" allow="autoplay; fullscreen"></iframe><video id="liveClip" class="hidden" controls playsinline></video></div>
   <p id="liveInfo" class="muted small"></p>
-  <button class="ghost">Close</button> <button type="button" id="liveAck">Acknowledge</button> <button type="button" class="ghost" id="liveClose">Close alarm</button>
+  <button class="ghost">Close</button> <button type="button" class="ghost" id="liveReplay">⟲ 60 s before the alarm</button> <button type="button" id="liveAck">Acknowledge</button> <button type="button" class="ghost" id="liveClose">Close alarm</button>
 </form></dialog>
 <div id="toasts" class="toasts"></div>
 

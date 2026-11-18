@@ -156,3 +156,10 @@ Dahua event stream, or ONVIF events for Axis, Provision, FLIR and other ONVIF ca
 each detection raises a `camera.alarm` at the chosen priority; otherwise it is only logged in Events. The Cameras table
 shows an Events column (Listening / Error, last event). The **Alarm manager** tab (formerly Incidents) groups repeats of an
 open alarm (count), offers Live view, Acknowledge/Close (single, selected or all), an open-alarm badge, pop-ups and an optional sound.
+
+### Fast playback
+The **Fast playback** tab shows every recording camera; one click (or **Load all cameras**) plays its last 30 s / 60 s /
+2 min / 5 min - or the same span before a chosen time - with play/pause/restart for all and a download link. Clips are cut
+from the recordings on the recorder (or recording server) without re-encoding, about a second behind live. In the Alarm
+manager, Live view has **60 s before the alarm**. Recordings are now written to disk continuously (not only when each
+5-minute file closes), so the latest minutes are playable and are not lost if a recorder stops.

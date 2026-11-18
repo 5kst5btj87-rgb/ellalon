@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 WINDOWS = os.name == "nt"
 HOME = (Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "EllalonRecorder" if WINDOWS
         else Path("/etc/ellalon-recorder"))
@@ -101,7 +101,7 @@ class CameraRecorder(threading.Thread):
         return cmd + ["-i", self.cam["url"], "-map", "0:v", "-map", "0:a?", "-c", "copy",
                       "-f", "segment", "-segment_time", str(SEGMENT), "-segment_atclocktime", "1",
                       "-reset_timestamps", "1", "-strftime", "1", "-segment_format", "mp4",
-                      "-segment_format_options", "movflags=+frag_keyframe+empty_moov",
+                      "-segment_format_options", "movflags=+frag_keyframe+empty_moov:flush_packets=1",
                       str(self.folder / "%Y%m%d-%H%M%S.mp4")]
 
     def run(self):
@@ -290,6 +290,51 @@ class Agent:
             srv.shutdown()
 
 
+# ---------------------------------------------------------------- quick clips ("last 60 seconds")
+class NoRecording(Exception):
+    pass
+
+
+def cut_clip(dirs, seconds, end_ts=None, ffmpeg="ffmpeg", segment=300, workdir=None):
+    """Cut [end - seconds, end] out of the 5-minute segments (the one still being written included)
+    without re-encoding. Returns the path of a temporary MP4 the caller must delete."""
+    import subprocess
+    import tempfile
+    from datetime import datetime as _dt, timedelta as _td
+    seconds = max(5, min(int(seconds), 600))
+    end = _dt.fromtimestamp(float(end_ts)) if end_ts else _dt.now()     # same clock as the file names
+    start = end - _td(seconds=seconds)
+    segs = []
+    for d in dirs:
+        for f in (d.glob("*.mp4") if d.is_dir() else []):
+            try:
+                segs.append((_dt.strptime(f.stem, "%Y%m%d-%H%M%S"), f))
+            except ValueError:
+                pass
+    segs.sort()
+    pick = []
+    for i, (t, f) in enumerate(segs):
+        nxt = min(segs[i + 1][0] if i + 1 < len(segs) else _dt.max, t + _td(seconds=segment + 5))
+        if t < end and nxt > start and f.stat().st_size > 0:
+            pick.append((t, f))
+    if not pick:
+        raise NoRecording(f"No recording between {start:%H:%M:%S} and {end:%H:%M:%S}")
+    offset = max(0.0, (start - pick[0][0]).total_seconds())
+    tmp = Path(tempfile.mkdtemp(prefix="clip-", dir=workdir))
+    lst, out = tmp / "list.txt", tmp / "clip.mp4"
+    lst.write_text("".join("file '" + str(f).replace("'", "'\\''") + "'\n" for _, f in [(t, f.resolve()) for t, f in pick]))
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "concat", "-safe", "0",
+           "-ss", f"{offset:.2f}", "-i", str(lst), "-t", str(seconds), "-map", "0:v", "-map", "0:a?",
+           "-c", "copy", "-movflags", "+faststart", "-y", str(out)]
+    r = subprocess.run(cmd, capture_output=True, timeout=120)
+    lst.unlink(missing_ok=True)
+    if r.returncode != 0 or not out.is_file() or out.stat().st_size < 1000:
+        out.unlink(missing_ok=True)
+        tmp.rmdir()
+        raise NoRecording("Could not cut the clip: " + (r.stderr.decode(errors="replace").strip()[-200:] or "empty result"))
+    return out
+
+
 # ---------------------------------------------------------------- playback server
 def make_handler(agent: Agent):
     class Handler(BaseHTTPRequestHandler):
@@ -329,6 +374,19 @@ def make_handler(agent: Agent):
             m = re.fullmatch(r"/files/(\d+)/(\d{8}-\d{6}\.mp4)", u.path)
             if m:
                 return self._file(agent.root / m.group(1) / m.group(2))
+            m = re.fullmatch(r"/clip/(\d+)", u.path)
+            if m:
+                try:
+                    secs = int(q.get("seconds", ["60"])[0])
+                    end = q.get("end", [None])[0]
+                    out = cut_clip([agent.root / m.group(1)], secs, float(end) if end else None, ffmpeg_path(), SEGMENT)
+                except (ValueError, NoRecording) as e:
+                    return self._json({"detail": str(e)}, 404)
+                try:
+                    return self._file(out)
+                finally:
+                    out.unlink(missing_ok=True)
+                    out.parent.rmdir()
             self.send_error(404)
 
         def _file(self, f: Path):

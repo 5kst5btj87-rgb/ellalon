@@ -202,6 +202,28 @@ async def recorder_recordings(sid: str, camera: int, day: str | None = None, _=D
     return [{**x, "storage": sid, "url": f"/api/recorders/{sid}/files/{camera}/{x['file']}"} for x in r.json()]
 
 
+@router.get("/recorders/{sid}/clip/{cid}")
+async def recorder_clip(sid: str, cid: int, seconds: int = 60, end: float | None = None, _=Depends(require("viewer"))):
+    """Last N seconds of a camera recorded on a recording server (cut there, no re-encoding)."""
+    base, secret = _agent(sid)
+    params = {"seconds": seconds, **({"end": end} if end else {})}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=150)) as c:
+            r = await c.get(f"{base}/clip/{cid}", params=params, headers={"Authorization": f"Bearer {secret}"})
+    except httpx.HTTPError:
+        raise HTTPException(502, "Cannot reach the recording server")
+    if r.status_code == 404:
+        try:
+            detail = r.json().get("detail")
+        except ValueError:
+            detail = None
+        raise HTTPException(404, detail or "No recording for this period")
+    if r.status_code != 200:
+        raise HTTPException(502, f"Recording server answered HTTP {r.status_code}")
+    from fastapi.responses import Response
+    return Response(r.content, media_type="video/mp4")
+
+
 @router.get("/recorders/{sid}/files/{cid}/{name}")
 async def recorder_file(sid: str, cid: int, name: str, request: Request, _=Depends(require("viewer"))):
     if not re.fullmatch(r"\d{8}-\d{6}\.mp4", name):
