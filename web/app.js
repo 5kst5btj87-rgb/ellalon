@@ -62,16 +62,80 @@ async function start() {
     $("#brand").innerHTML = `ELLALON <span class="build">${esc(h.build || h.version)}</span>`; $("#brand").title = `Version ${h.version}, build ${h.build}`;
   }).catch(() => {});
   cameras = await api("/api/cameras");
-  connectWs(); renderWall(); renderWallSide(); loadLayouts(); refreshAlarmBadge(); show("wall");
+  connectWs(); renderWall(); renderWallSide(); loadLayouts(); refreshAlarmBadge(); startTabs();
 }
 
-// ---------------------------------------------------------------- tabs
-document.querySelectorAll("nav a").forEach((a) => (a.onclick = () => show(a.dataset.tab)));
-function show(tab) {
-  document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== "tab-" + tab));
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+// ---------------------------------------------------------------- apps, tabs, home
+const I = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
+const APPS = [
+  { id: "wall", name: "Video wall", desc: "Live cameras, layouts, full screen", icon: I('<rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="7" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/><rect x="13" y="13" width="8" height="7" rx="1"/>'), color: "#3fa7ff" },
+  { id: "incidents", name: "Alarm manager", desc: "Open alarms, acknowledge, close", icon: I('<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'), color: "#ff5b5b",
+    stat: () => { const n = +($("#alarmBadge").textContent || 0); return n ? `${n} open` : "No open alarms"; } },
+  { id: "events", name: "Events", desc: "Everything that happens, live", icon: I('<path d="M4 6h16M4 12h16M4 18h10"/>'), color: "#9b8cff" },
+  { id: "fastpb", name: "Fast playback", desc: "Last minute of every camera", icon: I('<path d="M11 7 5 12l6 5zM19 7l-6 5 6 5z"/>'), color: "#ffb340" },
+  { id: "playback", name: "Playback", desc: "Recordings by camera and time", icon: I('<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/>'), color: "#ff8a3d" },
+  { id: "cameras", name: "Cameras", desc: "Add, discover, analytics, events", icon: I('<rect x="3" y="7" width="13" height="10" rx="2"/><path d="m16 11 5-3v8l-5-3"/>'), color: "#34c77b",
+    stat: () => cameras.length ? `${cameras.filter((c) => c.status?.state === "online").length} of ${cameras.length} online` : "" },
+  { id: "rules", name: "Rules", desc: "When … only if … then …", icon: I('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="12" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M8.5 6H13v12H8.5M13 12h2.5"/>'), color: "#21c7c7" },
+  { id: "faces", name: "Faces", desc: "Watch list and face matches", icon: I('<circle cx="12" cy="10" r="4"/><path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5"/>'), color: "#e46fd2" },
+  { id: "integrations", name: "Integrations", desc: "Apollo, RISCO and more", icon: I('<path d="M9 4v5M15 4v5M7 9h10v3a5 5 0 0 1-10 0z"/><path d="M12 17v4"/>'), color: "#c9a227" },
+  { id: "storage", name: "Storage", desc: "Disks, shares, recording servers", icon: I('<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>'), color: "#7c9cff" },
+  { id: "modules", name: "System", desc: "Apps, health, logs", icon: I('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>'), color: "#a0a8b8" },
+];
+const appOf = (id) => APPS.find((a) => a.id === id);
+let openTabs = [], activeTab = "home";
+const pinned = () => { try { return JSON.parse(localStorage.getItem("ellalon_pinned") ?? '["wall"]'); } catch { return ["wall"]; } };
+const setPinned = (list) => { try { localStorage.setItem("ellalon_pinned", JSON.stringify(list)); } catch {} };
+function startTabs() {
+  openTabs = pinned().filter(appOf);
+  show(openTabs[0] || "home");
 }
+function show(tab) {
+  if (tab !== "home" && !appOf(tab)) tab = "home";
+  if (tab !== "home" && !openTabs.includes(tab)) openTabs.push(tab);
+  activeTab = tab;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== "tab-" + tab));
+  $("#homeBtn").classList.toggle("active", tab === "home");
+  renderTabs();
+  if (tab === "home") renderHome();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+}
+function renderTabs() {
+  const pins = pinned();
+  const order = [...openTabs.filter((t) => pins.includes(t)), ...openTabs.filter((t) => !pins.includes(t))];
+  openTabs = order;
+  $("#tabStrip").innerHTML = order.map((t) => { const a = appOf(t), pin = pins.includes(t);
+    return `<div class="tabchip ${t === activeTab ? "active" : ""} ${pin ? "pinned" : ""}" data-tab="${t}" style="--c:${a.color}" title="${esc(a.desc)}">
+      <span class="ti">${a.icon}</span><span class="tn">${esc(a.name)}</span>
+      <button class="tpin" title="${pin ? "Unpin (stop opening it at start)" : "Pin: open this tab every time Ellalon starts"}">${I('<path d="M9 4h6l-1 5 3 3H7l3-3z"/><path d="M12 15v5"/>')}</button>
+      ${pin ? "" : `<button class="tclose" title="Close tab">×</button>`}</div>`; }).join("");
+  $("#tabStrip").querySelectorAll(".tabchip").forEach((c) => {
+    c.onclick = () => show(c.dataset.tab);
+    c.querySelector(".tpin").onclick = (e) => { e.stopPropagation(); togglePin(c.dataset.tab); };
+    const x = c.querySelector(".tclose"); if (x) x.onclick = (e) => { e.stopPropagation(); closeTab(c.dataset.tab); };
+    c.onauxclick = (e) => { if (e.button === 1 && !pinned().includes(c.dataset.tab)) closeTab(c.dataset.tab); };   // middle click
+  });
+}
+function togglePin(t) {
+  const p = pinned(); setPinned(p.includes(t) ? p.filter((x) => x !== t) : [...p, t]); renderTabs();
+  if (activeTab === "home") renderHome();
+}
+function closeTab(t) {
+  const i = openTabs.indexOf(t); openTabs = openTabs.filter((x) => x !== t);
+  if (activeTab === t) show(openTabs[Math.min(i, openTabs.length - 1)] || "home"); else renderTabs();
+}
+function renderHome() {
+  const h = new Date().getHours();
+  $("#homeHello").textContent = `${h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"}${me?.sub ? ", " + me.sub : ""}`;
+  const pins = pinned();
+  $("#homeGrid").innerHTML = APPS.map((a) => `<button class="app3d" data-app="${a.id}" style="--c:${a.color}">
+      <span class="appicon">${a.icon}</span><span class="appname">${esc(a.name)}</span>
+      <span class="appdesc">${esc(a.desc)}</span>${a.stat && a.stat() ? `<span class="appstat">${esc(a.stat())}</span>` : ""}
+      ${pins.includes(a.id) ? '<span class="apppin" title="Pinned">📌</span>' : openTabs.includes(a.id) ? '<span class="appopen" title="Open">●</span>' : ""}</button>`).join("");
+  $("#homeGrid").querySelectorAll(".app3d").forEach((b) => (b.onclick = () => show(b.dataset.app)));
+}
+$("#homeBtn").onclick = () => show("home");
+$("#bellBtn").onclick = () => show("incidents");
 
 // ---------------------------------------------------------------- live events
 function connectWs() {
@@ -626,6 +690,66 @@ $("#ruleForm").onsubmit = async (e) => {
     await (ruleEditing ? mod("c2", `/rules/${ruleEditing.id}`, { method: "PUT", body }) : mod("c2", "/rules", { method: "POST", body }));
     $("#ruleDialog").close(); loadRules();
   } catch (err) { msg.className = "small err"; msg.textContent = errText(err); }
+};
+
+// ---------------------------------------------------------------- faces (face-recognition module)
+let facePeople = [];
+async function loadFaces() {
+  const st = $("#faceStatus"), admin = me.role === "admin";
+  $("#faceAdd").classList.toggle("hidden", !admin);
+  try { cameras = await api("/api/cameras"); } catch {}
+  const on = cameras.filter((c) => c.face_recognition).map((c) => c.name);
+  $("#faceHelp").innerHTML = `Cameras looking for these people: <b>${on.length ? esc(on.join(", ")) : "none yet"}</b> - tick “Face recognition” on a camera (Cameras → Edit).
+    A match raises an alarm with a snapshot (rule “Face on a watch list” in the Rules tab).`;
+  let s;
+  try { s = await mod("face-recognition", "/status"); }
+  catch {
+    let m = null; try { m = await api("/api/modules/face-recognition"); } catch {}
+    st.className = "small err";
+    st.textContent = m?.enabled ? "● Face recognition is starting or not running - see System tab" : "● Face recognition is off";
+    $("#faceStart").classList.toggle("hidden", !admin || !!m?.enabled);
+    $("#faceGrid").innerHTML = ""; return;
+  }
+  $("#faceStart").classList.add("hidden");
+  st.className = "small " + (s.ready ? "ok" : "err");
+  st.textContent = s.ready ? `● Running · ${s.people} person(s) · ${s.cameras} camera(s) analysed` : s.error ? `● Face engine error: ${s.error}` : "● Face engine starting (first start downloads the model)…";
+  try { facePeople = await mod("face-recognition", "/people"); } catch { facePeople = []; }
+  $("#faceLists").innerHTML = [...new Set(facePeople.map((p) => p.list))].map((l) => `<option value="${esc(l)}">`).join("");
+  $("#faceGrid").innerHTML = facePeople.map((p) => `<div class="card face">
+      ${p.photo ? `<img src="/modules/face-recognition/people/${p.id}/photo" alt="" loading="lazy">` : `<div class="noface">?</div>`}
+      <b>${esc(p.name)}</b><span class="muted small">${esc(p.list)} · ${p.samples} photo(s) · ${esc(SEV_NAME[p.severity] || p.severity)}</span>
+      ${admin ? `<button class="danger small" onclick="faceDel('${p.id}')">Remove</button>` : ""}</div>`).join("")
+    || `<p class="muted">Nobody on the watch list yet - click “Add person”.</p>`;
+  if (!s.ready && !s.error) setTimeout(() => { if (!$("#tab-faces").classList.contains("hidden")) loadFaces(); }, 8000);
+}
+$("#faceStart").onclick = async () => {
+  $("#faceStart").disabled = true;
+  try { await api("/api/modules/face-recognition/enable", { method: "POST" }); }
+  catch (err) {
+    notify(/not found|pull/i.test(errText(err)) ? "Face recognition is not installed yet. On the server run:\n\nsudo ellalon build face-recognition\n\nthen click Start again." : errText(err));
+  }
+  $("#faceStart").disabled = false; setTimeout(loadFaces, 3000);
+};
+$("#faceAdd").onclick = () => { const f = $("#faceForm"); f.reset(); $("#facePreview").innerHTML = ""; $("#faceMsg").textContent = ""; $("#faceDialog").showModal(); };
+$("#faceForm").elements.photos.onchange = (e) => {
+  $("#facePreview").innerHTML = [...e.target.files].slice(0, 5).map((f) => `<img src="${URL.createObjectURL(f)}" alt="">`).join("");
+};
+$("#faceForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, msg = $("#faceMsg"), files = [...el(f, "photos").files].slice(0, 5);
+  const fd = new FormData(); fd.append("name", el(f, "name").value.trim()); fd.append("list_name", el(f, "list_name").value.trim()); fd.append("severity", el(f, "severity").value);
+  files.forEach((x) => fd.append("photos", x));
+  msg.className = "small muted"; msg.textContent = "Checking the photos…";
+  try {
+    const r = await fetch("/modules/face-recognition/people", { method: "POST", body: fd, headers: { Authorization: "Bearer " + token } });
+    if (!r.ok) { let d = `HTTP ${r.status}`; try { d = (await r.json()).detail || d; } catch {} throw new Error(d); }
+    $("#faceDialog").close(); loadFaces();
+  } catch (err) { msg.className = "small err"; msg.textContent = err.message; }
+};
+window.faceDel = async (id) => {
+  const p = facePeople.find((x) => x.id === id);
+  if (!(await ask(`Remove ${p?.name || "this person"} from the watch list?`, { ok: "Remove", danger: true }))) return;
+  try { await mod("face-recognition", `/people/${id}`, { method: "DELETE" }); } catch (err) { notify(errText(err)); }
+  loadFaces();
 };
 
 // ---------------------------------------------------------------- playback (vms-recorder module)

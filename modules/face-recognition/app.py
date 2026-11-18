@@ -18,7 +18,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from datetime import datetime
+
 from fastapi import File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from ellalon_sdk import EllalonModule
 
@@ -28,7 +31,7 @@ FPS = float(os.environ.get("FACE_FPS", "2"))
 ENGINE = os.environ.get("FACE_ENGINE", "insightface")
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
-m = EllalonModule(version="0.1.0")
+m = EllalonModule(version="0.2.0")
 app = m.app
 
 
@@ -80,6 +83,7 @@ class Watchlist:
 
 
 engine: FaceEngine | None = None
+engine_error = ""
 watchlist = Watchlist()
 workers: dict[int, threading.Thread] = {}
 stops: dict[int, threading.Event] = {}
@@ -107,11 +111,38 @@ def worker(cam: dict, stop: threading.Event):
                     seen[pid] = time.time()
                     p = watchlist.people[pid]
                     asyncio.run_coroutine_threadsafe(m.publish("face.match", {
+                        "title": f"Face match: {p['name']} - {cam['name']}", "event": f"face-{pid}",
                         "camera": cam["name"], "person_id": pid, "name": p["name"],
-                        "list": p.get("list"), "similarity": round(sim, 3), "bbox": f["bbox"]},
-                        "high", camera_id=cam["id"]), loop)
+                        "list": p.get("list"), "similarity": round(sim, 3), "bbox": f["bbox"],
+                        "snapshot": save_match(frame, f["bbox"], p["name"], cam["id"])},
+                        p.get("severity") or "high", camera_id=cam["id"]), loop)
         cap.release()
         time.sleep(3)
+
+
+def save_match(frame, bbox, name, cid) -> str | None:
+    try:
+        img = frame.copy()
+        x1, y1, x2, y2 = (int(v) for v in bbox)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
+        cv2.putText(img, name, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        folder = DATA / "matches"
+        folder.mkdir(parents=True, exist_ok=True)
+        fn = f"{datetime.now():%Y%m%d-%H%M%S}-{cid}-{uuid.uuid4().hex[:4]}.jpg"
+        cv2.imwrite(str(folder / fn), img, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        return f"/modules/face-recognition/matches/{fn}"
+    except Exception:
+        return None
+
+
+def save_face(img, bbox, pid):
+    """Keep a square crop of the enrolled face for the watch list."""
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    pad = int(0.35 * max(x2 - x1, y2 - y1))
+    crop = img[max(0, y1 - pad):min(h, y2 + pad), max(0, x1 - pad):min(w, x2 + pad)]
+    (DATA / "faces").mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(DATA / "faces" / f"{pid}.jpg"), cv2.resize(crop, (200, 200)), [cv2.IMWRITE_JPEG_QUALITY, 85])
 
 
 async def sync_cameras():
@@ -134,8 +165,15 @@ async def sync_cameras():
 async def _start():
     global engine, loop
     loop = asyncio.get_running_loop()
-    engine = await asyncio.to_thread(FaceEngine)
-    m.status.update(engine=ENGINE, ready=engine.ready, people=len(watchlist.people))
+    try:
+        engine = await asyncio.to_thread(FaceEngine)        # first start downloads the face model
+    except Exception as e:
+        global engine_error
+        engine_error = f"{e.__class__.__name__}: {str(e)[:200]}"
+        m.log.error("face engine failed: %s", engine_error)
+        engine = FaceEngine.__new__(FaceEngine)
+        engine.model = None
+    m.status.update(engine=ENGINE, ready=engine.ready, people=len(watchlist.people), error=engine_error)
 
 
 @m.on_broadcast("camera.changed")
@@ -154,34 +192,67 @@ async def poller():
 
 
 # ---------------------------------------------------------------- watchlist API
+@app.get("/status")
+def status():
+    return {"engine": ENGINE, "ready": bool(engine and engine.ready), "starting": engine is None, "error": engine_error,
+            "cameras": len(workers), "people": len(watchlist.people), "threshold": THRESH}
+
+
 @app.get("/people")
 def people():
-    return [{"id": k, "name": v["name"], "list": v.get("list"), "samples": len(v["embeddings"])}
-            for k, v in watchlist.people.items()]
+    return [{"id": k, "name": v["name"], "list": v.get("list"), "severity": v.get("severity", "high"),
+             "samples": len(v["embeddings"]), "photo": (DATA / "faces" / f"{k}.jpg").is_file()}
+            for k, v in sorted(watchlist.people.items(), key=lambda kv: kv[1]["name"].lower())]
 
 
 @app.post("/people")
-async def enroll(name: str = Form(...), list_name: str = Form("default"),
+async def enroll(name: str = Form(...), list_name: str = Form("Watch list"), severity: str = Form("high"),
                  photos: list[UploadFile] = File(...)):
     if not (engine and engine.ready):
-        raise HTTPException(503, "Face engine not available")
-    embs = []
+        raise HTTPException(503, f"Face engine not available: {engine_error}" if engine_error else
+                            "The face engine is still starting (first start downloads the model) - try again in a minute")
+    if severity not in ("info", "warning", "high", "critical"):
+        severity = "high"
+    embs, first = [], None
     for ph in photos:
         img = cv2.imdecode(np.frombuffer(await ph.read(), np.uint8), cv2.IMREAD_COLOR)
         faces = await asyncio.to_thread(engine.faces, img) if img is not None else []
+        if img is None:
+            raise HTTPException(400, f"{ph.filename}: not a picture")
         if len(faces) != 1:
-            raise HTTPException(400, f"{ph.filename}: expected exactly 1 face, found {len(faces)}")
+            raise HTTPException(400, f"{ph.filename}: needs exactly one face, found {len(faces)}")
         embs.append(faces[0]["embedding"].tolist())
+        first = first or (img, faces[0]["bbox"])
     pid = uuid.uuid4().hex[:12]
-    watchlist.people[pid] = {"name": name, "list": list_name, "embeddings": embs}
+    watchlist.people[pid] = {"name": name.strip() or "Unnamed", "list": list_name.strip() or "Watch list",
+                             "severity": severity, "embeddings": embs}
+    save_face(*first, pid)
     watchlist.save()
     m.status["people"] = len(watchlist.people)
     await m.publish("watchlist.enrolled", {"person_id": pid, "name": name, "list": list_name})
     return {"id": pid}
 
 
+@app.get("/people/{pid}/photo")
+def person_photo(pid: str):
+    f = DATA / "faces" / f"{pid}.jpg"
+    if pid not in watchlist.people or not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="image/jpeg")
+
+
 @app.delete("/people/{pid}")
 def remove(pid: str):
     watchlist.people.pop(pid, None)
+    (DATA / "faces" / f"{pid}.jpg").unlink(missing_ok=True)
     watchlist.save()
+    m.status["people"] = len(watchlist.people)
     return {"ok": True}
+
+
+@app.get("/matches/{name}")
+def match_photo(name: str):
+    f = DATA / "matches" / name
+    if "/" in name or ".." in name or not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="image/jpeg")

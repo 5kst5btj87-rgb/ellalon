@@ -19,26 +19,21 @@
 </section>
 
 <section id="shell" class="hidden">
-  <header>
+  <header class="topbar">
+    <button id="homeBtn" class="homebtn" title="All apps"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h5v-5.5h3v5.5h5V10"/></svg></button>
     <b class="brand" id="brand" title="">ELLALON</b>
-    <nav>
-      <a data-tab="wall" class="active">Video wall</a>
-      <a data-tab="incidents">Alarm manager <span id="alarmBadge" class="badge hidden"></span></a>
-      <a data-tab="events">Events</a>
-      <a data-tab="fastpb">Fast playback</a>
-      <a data-tab="playback">Playback</a>
-      <a data-tab="cameras">Cameras</a>
-      <a data-tab="rules">Rules</a>
-      <a data-tab="integrations">Integrations</a>
-      <a data-tab="storage">Storage</a>
-      <a data-tab="modules">System</a>
-    </nav>
-    <span id="who" class="muted"></span>
-    <button id="pwBtn" class="ghost">Change password</button>
-    <button id="logout" class="ghost">Sign out</button>
+    <div id="tabStrip" class="tabstrip"></div>
+    <button id="bellBtn" class="iconbtn" title="Alarm manager"><svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg><span id="alarmBadge" class="badge hidden"></span></button>
+    <span id="who" class="muted small"></span>
+    <button id="pwBtn" class="ghost small">Change password</button>
+    <button id="logout" class="ghost small">Sign out</button>
   </header>
 
   <main>
+    <div id="tab-home" class="tab home hidden">
+      <div class="homehead"><h2 id="homeHello">Welcome</h2><p class="muted">Open an app - it appears as a tab at the top. Pin a tab (📌) to open it every time Ellalon starts.</p></div>
+      <div id="homeGrid" class="apps"></div>
+    </div>
     <div id="tab-wall" class="tab">
       <div class="toolbar">
         <button id="wallSideBtn" class="ghost" title="Show or hide the camera list">☰ Cameras</button>
@@ -116,6 +111,13 @@
       <div class="toolbar"><button id="ruleAdd">+ New rule</button>
         <span class="muted small">When something happens → only if the conditions are met → then do these actions. Rules run on the server, also when nobody is logged in.</span></div>
       <div id="ruleList" class="rules"></div>
+    </div>
+
+    <div id="tab-faces" class="tab hidden">
+      <div class="toolbar"><button id="faceAdd">+ Add person</button> <span id="faceStatus" class="small"></span>
+        <button id="faceStart" class="hidden">Start face recognition</button></div>
+      <p class="muted small" id="faceHelp"></p>
+      <div id="faceGrid" class="faces"></div>
     </div>
 
     <div id="tab-integrations" class="tab hidden">
@@ -414,6 +416,20 @@
   </section>
   <p id="ruleMsg" class="small"></p>
   <button type="button" class="ghost" data-close>Cancel</button> <button id="ruleSave">Save rule</button>
+</form></dialog>
+
+<dialog id="faceDialog"><form id="faceForm">
+  <h3>Add person to the watch list</h3>
+  <div class="fgrid">
+    <label>Name<input name="name" required maxlength="80"></label>
+    <label>List<input name="list_name" list="faceLists" value="Watch list" maxlength="40"></label>
+    <label>Priority of a match<select name="severity"><option value="info">Info (events only)</option><option value="warning">Warning</option><option value="high" selected>High</option><option value="critical">Critical</option></select></label>
+  </div>
+  <datalist id="faceLists"></datalist>
+  <label>Photos (1-5, one face each, front-facing and sharp)<input type="file" name="photos" accept="image/*" multiple required></label>
+  <div id="facePreview" class="facePrev"></div>
+  <p id="faceMsg" class="small"></p>
+  <button type="button" class="ghost" data-close>Cancel</button> <button>Add</button>
 </form></dialog>
 
 <dialog id="pwDialog"><form id="pwForm"><h3>Change password</h3>
