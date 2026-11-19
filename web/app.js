@@ -68,6 +68,8 @@ async function start() {
 // ---------------------------------------------------------------- apps, tabs, home
 const I = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
 const APPS = [
+  { id: "daniel", name: "Daniel", desc: "Big clock - system time", icon: I('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'), color: "#f5b942",
+    stat: () => new Date(Date.now() + (window.dcOffset || 0)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) },
   { id: "dashboard", name: "Dashboard", desc: "Status of everything, charts, reports", icon: I('<rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/>'), color: "#22c3e6",
     stat: () => typeof dbStat === "function" ? dbStat() : "" },
   { id: "wall", name: "Video wall", desc: "Live cameras, layouts, full screen", icon: I('<rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="7" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/><rect x="13" y="13" width="8" height="7" rx="1"/>'), color: "#3fa7ff" },
@@ -104,7 +106,7 @@ function show(tab) {
   $("#homeBtn").classList.toggle("active", tab === "home");
   renderTabs();
   if (tab === "home") renderHome();
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, maps: loadMaps, analytics: loadAnalytics, assistant: loadAssistant, dashboard: loadDashboard, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, daniel: loadDaniel, maps: loadMaps, analytics: loadAnalytics, assistant: loadAssistant, dashboard: loadDashboard, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 function renderTabs() {
   const pins = pinned();
@@ -799,6 +801,30 @@ window.playAt = async (cid, ts, what = "") => {
       <a class="link small" href="${url}" download="${esc(cam.name)}-${day}-${d.toTimeString().slice(0, 8).replaceAll(":", "")}.mp4">Download clip</a>`;
   } catch (err) { box.className = "pbmoment err"; box.textContent = `Could not play that moment: ${errText(err)}`; }
 };
+
+// ---------------------------------------------------------------- Daniel: big clock with the server's time
+window.dcOffset = 0;
+let dcTimer = null, dcSynced = 0;
+async function dcSync() {
+  try {
+    const t0 = Date.now(), r = await fetch("/api/health", { cache: "no-store" }), t1 = Date.now();
+    const d = r.headers.get("Date");
+    if (d) { window.dcOffset = new Date(d).getTime() + 500 - (t0 + t1) / 2; dcSynced = Date.now(); }   // Date has 1 s resolution
+  } catch {}
+}
+async function loadDaniel() {
+  if (Date.now() - dcSynced > 600000) await dcSync();
+  clearInterval(dcTimer);
+  const tick = () => {
+    if ($("#tab-daniel").classList.contains("hidden")) { clearInterval(dcTimer); return; }
+    const now = new Date(Date.now() + window.dcOffset), p = (n) => String(n).padStart(2, "0");
+    $("#dcTime").innerHTML = `${p(now.getHours())}:${p(now.getMinutes())}<span>:${p(now.getSeconds())}</span>`;
+    $("#dcDate").textContent = now.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    const off = Math.round(window.dcOffset / 1000);
+    $("#dcInfo").textContent = `Server time · ${Intl.DateTimeFormat().resolvedOptions().timeZone}` + (Math.abs(off) >= 2 ? ` · this computer's clock is ${Math.abs(off)} s ${off > 0 ? "behind" : "ahead"}` : "");
+  };
+  tick(); dcTimer = setInterval(tick, 250);
+}
 
 // ---------------------------------------------------------------- cameras
 let brands = [], editing = null;
