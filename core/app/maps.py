@@ -4,7 +4,12 @@ Each map has a background picture and a list of items placed on it. Positions ar
 picture (0..1) so they stay right whatever size the map is shown at. Live status comes from the
 browser (cameras, integration devices, open alarms) - the map only stores where things are.
 """
+import asyncio
+import base64
+import subprocess
+import tempfile
 import uuid
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -132,3 +137,26 @@ def get_image(mid: str, _=Depends(require("viewer"))):
         if r.image_type == "image/svg+xml":            # an uploaded SVG must not run scripts
             headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
         return Response(r.image, media_type=r.image_type, headers=headers)
+
+
+@router.post("/maps/pdf-pages")
+async def pdf_pages(file: UploadFile = File(...), _=Depends(require("admin"))):
+    """Plan import: the pages of a PDF as PNG pictures (data URLs), at most 12 pages."""
+    data = await file.read(60 * 1024 * 1024 + 1)
+    if len(data) > 60 * 1024 * 1024:
+        raise HTTPException(413, "The PDF is bigger than 60 MB")
+    if data[:5] != b"%PDF-":
+        raise HTTPException(400, "This is not a PDF file")
+    return await asyncio.to_thread(_render_pdf, data)
+
+
+def _render_pdf(data: bytes) -> dict:
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "plan.pdf"
+        src.write_bytes(data)
+        r = subprocess.run(["pdftoppm", "-png", "-r", "200", "-scale-to", "3000", "-f", "1", "-l", "12", str(src), str(Path(d) / "p")],
+                           capture_output=True, timeout=180)
+        pages = sorted(Path(d).glob("p-*.png"), key=lambda p: int(p.stem.rsplit("-", 1)[-1]))
+        if not pages:
+            raise HTTPException(400, "Could not read this PDF: " + r.stderr.decode(errors="replace")[-200:])
+        return {"pages": ["data:image/png;base64," + base64.b64encode(p.read_bytes()).decode() for p in pages]}

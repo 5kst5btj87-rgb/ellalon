@@ -114,6 +114,55 @@
       <div id="ruleList" class="rules"></div>
     </div>
 
+    <div id="tab-planimport" class="tab hidden">
+      <div class="pi">
+        <aside class="piside">
+          <div class="card mapcard">
+            <div class="maphead"><b>1 · Floor plan</b></div>
+            <label class="pidrop" id="piDrop"><input type="file" id="piFile" accept="application/pdf,image/png,image/jpeg,image/webp" hidden>
+              <span>📄 Choose or drop a <b>PDF</b>, <b>JPG</b> or <b>PNG</b></span></label>
+            <div id="piPages" class="pipages"></div>
+          </div>
+          <div class="card mapcard pistep">
+            <div class="maphead"><b>2 · Straighten</b></div>
+            <div class="row"><button type="button" class="ghost small" id="piRotL">⟲ 90°</button><button type="button" class="ghost small" id="piRotR">⟳ 90°</button>
+              <button type="button" class="ghost small" id="piCrop">✂ Crop</button><button type="button" class="ghost small" id="piCropReset">Full page</button></div>
+            <p class="muted small" id="piCropHint">Crop: drag a box around the plan on the picture.</p>
+          </div>
+          <div class="card mapcard pistep">
+            <div class="maphead"><b>3 · Improve</b></div>
+            <label class="small">Look<select id="piStyle"><option value="original">Original colours (cleaned)</option><option value="clean" selected>Clean white</option><option value="soft">Soft grey floor</option><option value="blueprint">Blueprint (dark)</option></select></label>
+            <label class="small">Contrast <span id="piStrV" class="muted"></span><input type="range" id="piStr" min="0" max="100" value="70"></label>
+            <label class="inline small"><input type="checkbox" id="piClean" checked> Remove paper colour, stains and scanner noise</label>
+            <label class="inline small"><input type="checkbox" id="piSharp" checked> Sharpen lines</label>
+          </div>
+          <div class="card mapcard pistep">
+            <div class="maphead"><b>4 · 3D</b><label class="inline small"><input type="checkbox" id="pi3d" checked> Raise the walls</label></div>
+            <label class="small">Wall height<input type="range" id="piH" min="4" max="60" value="22"></label>
+            <label class="small">Wall thickness - thinner lines (text, doors, furniture) stay flat<input type="range" id="piT" min="1" max="20" value="3"></label>
+            <label class="inline small"><input type="checkbox" id="piShowW"> Show the detected walls in red</label>
+            <p class="muted small">Names and labels on the plan are kept exactly as they are.</p>
+          </div>
+          <div class="card mapcard pistep">
+            <div class="maphead"><b>5 · Save</b></div>
+            <label class="inline small"><input type="radio" name="piTo" value="new" checked> New map</label>
+            <input id="piName" placeholder="Map name" maxlength="80">
+            <p id="piNameWarn" class="small err hidden"></p>
+            <label class="inline small"><input type="radio" name="piTo" value="old"> Replace the picture of an existing map (its name and objects stay)</label>
+            <select id="piMap"></select>
+            <button type="button" id="piSave">💾 Save to Maps</button>
+            <p id="piMsg" class="small"></p>
+          </div>
+        </aside>
+        <section class="pimain">
+          <div class="toolbar"><b class="maptitle">Plan import</b><span id="piState" class="small muted"></span><span class="grow"></span>
+            <button type="button" class="ghost small" id="piBefore" title="Hold to see the original">👁 Hold: original</button></div>
+          <div class="piview" id="piView"><canvas id="piCanvas"></canvas><div id="piCropBox" class="picrop hidden"></div>
+            <div class="piempty" id="piEmpty">Choose a floor plan on the left - PDF (any page), JPG or PNG.</div></div>
+        </section>
+      </div>
+    </div>
+
     <div id="tab-daniel" class="tab hidden">
       <div class="bigclock">
         <div id="dcTime" class="dctime">--:--<span>:--</span></div>
@@ -233,6 +282,8 @@
             <b id="mapTitle" class="maptitle">No map</b>
             <span id="mapSummary" class="small muted"></span>
             <span class="grow"></span>
+            <button id="map3d" class="ghost small" title="3D view (tilt the floor plan)">3D</button>
+            <button id="mapTurnL" class="ghost small hidden" title="Turn the view">⟲</button><button id="mapTurnR" class="ghost small hidden" title="Turn the view">⟳</button>
             <button id="mapZoomOut" class="ghost small" title="Zoom out">−</button>
             <button id="mapFit" class="ghost small" title="Fit to screen">Fit</button>
             <button id="mapZoomIn" class="ghost small" title="Zoom in">+</button>
@@ -645,5 +696,6 @@
 <script src="analytics.js"></script>
 <script src="assistant.js"></script>
 <script src="dashboard.js"></script>
+<script src="planimport.js"></script>
 </body>
 </html>

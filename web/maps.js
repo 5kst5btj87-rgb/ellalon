@@ -419,3 +419,18 @@ $("#mapBack").onclick = () => { const id = mapHist.pop(); mapOpen(maps.find((m) 
 $("#mapZoomIn").onclick = () => mapZoomBy(1.25);
 $("#mapZoomOut").onclick = () => mapZoomBy(0.8);
 $("#mapFit").onclick = () => { mapFit(); mapClosePop(); };
+
+// ---- 3D view: tilt the plan, icons stand up; turn it with the arrows (view only - editing is flat)
+let map3d = (() => { try { return localStorage.getItem("ellalon_map3d") === "1"; } catch { return false; } })(), mapRz = 0;
+function map3dUi() {
+  const on = map3d && !mapEditing;
+  $("#mapView").classList.toggle("tilt", on); $("#map3d").classList.toggle("on", on);
+  $("#mapTurnL").classList.toggle("hidden", !on); $("#mapTurnR").classList.toggle("hidden", !on);
+  $("#mapStage").style.setProperty("--rz", mapRz + "deg"); $("#mapItems").style.setProperty("--rz", mapRz + "deg");
+  mapClosePop();
+}
+$("#map3d").onclick = () => { map3d = !map3d; try { localStorage.setItem("ellalon_map3d", map3d ? "1" : "0"); } catch {} if (map3d && mapEditing) $("#mapEdit").onclick(); map3dUi(); };
+$("#mapTurnL").onclick = () => { mapRz -= 30; map3dUi(); };
+$("#mapTurnR").onclick = () => { mapRz += 30; map3dUi(); };
+$("#mapEdit").addEventListener("click", () => setTimeout(map3dUi, 0));
+map3dUi();

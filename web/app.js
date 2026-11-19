@@ -84,6 +84,7 @@ const APPS = [
   { id: "analytics", name: "Analytics", desc: "Find people by clothes, colours, bags…", icon: I('<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5.5 5.5"/><circle cx="10.5" cy="8.5" r="1.8"/><path d="M7.5 13.5c.8-1.5 1.8-2 3-2s2.2.5 3 2"/>'), color: "#ff7a59" },
   { id: "maps", name: "Maps", desc: "Floor plans with live status", icon: I('<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>'), color: "#4cc38a",
     stat: () => typeof mapStat === "function" ? mapStat() : "" },
+  { id: "planimport", name: "Plan import", desc: "PDF / JPG floor plan → clean 3D map", icon: I('<path d="M4 20V8l8-4 8 4v12"/><path d="M4 20h16M9 20v-6h6v6"/><path d="M8 9h8"/>'), color: "#2dd4bf" },
   { id: "rules", name: "Rules", desc: "When … only if … then …", icon: I('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="12" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M8.5 6H13v12H8.5M13 12h2.5"/>'), color: "#21c7c7" },
   { id: "faces", name: "Faces", desc: "Watch list and face matches", icon: I('<circle cx="12" cy="10" r="4"/><path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5"/>'), color: "#e46fd2" },
   { id: "integrations", name: "Integrations", desc: "Apollo, RISCO and more", icon: I('<path d="M9 4v5M15 4v5M7 9h10v3a5 5 0 0 1-10 0z"/><path d="M12 17v4"/>'), color: "#c9a227" },
@@ -106,7 +107,7 @@ function show(tab) {
   $("#homeBtn").classList.toggle("active", tab === "home");
   renderTabs();
   if (tab === "home") renderHome();
-  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, daniel: loadDaniel, maps: loadMaps, analytics: loadAnalytics, assistant: loadAssistant, dashboard: loadDashboard, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
+  ({ incidents: loadIncidents, events: loadEvents, cameras: loadCameras, modules: loadModules, integrations: loadIntegrations, rules: loadRules, daniel: loadDaniel, planimport: loadPlanImport, maps: loadMaps, analytics: loadAnalytics, assistant: loadAssistant, dashboard: loadDashboard, faces: loadFaces, storage: loadStorageTab, playback: loadPlayback, fastpb: loadFastPb }[tab] || (() => {}))();
 }
 function renderTabs() {
   const pins = pinned();
