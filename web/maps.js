@@ -3,6 +3,16 @@
 // status of what they stand for (camera online/offline, door locked/unlocked/open/forced, input
 // alarm/armed/disarmed, output on/off, open alarms). Positions are stored as fractions of the plan.
 let maps = [], mapCur = null, mapEditing = false, mapSel = null, mapZoom = 1, mapHist = [];
+const mapSelSet = new Set();             // selected objects in edit mode (mapSel = the one clicked last)
+const selItems = () => (mapCur?.items || []).filter((i) => mapSelSet.has(i.id));
+function mapSelect(ids, add = false) {
+  if (!add) mapSelSet.clear();
+  ids.forEach((id) => mapSelSet.add(id));
+  mapSel = ids.length ? ids[ids.length - 1] : mapSelSet.size ? [...mapSelSet].pop() : null;
+  $("#mapItems").querySelectorAll(".mitem").forEach((e) => e.classList.toggle("sel", mapSelSet.has(e.dataset.id)));
+  mapProps();
+}
+function mapUnselect() { mapSelSet.clear(); mapSel = null; }
 let mapDevs = [], mapIntTypes = null, mapIntSystems = [], mapAlarms = [], mapSaveT = null, mapRefreshT = null;
 const MAP_W0 = 1600, MAP_H0 = 1000;          // canvas size of a map without a picture
 
@@ -141,7 +151,7 @@ const MAPI = (d) => `<svg viewBox="0 0 24 24" class="mi">${d}</svg>`;
 // -------------------------------------------------------------- open / draw
 function mapOpen(m, fit = true) {
   const changedMap = mapCur?.id !== m?.id;
-  mapCur = m; mapSel = null; mapClosePop(); mapProps();
+  mapCur = m; mapUnselect(); mapClosePop(); mapProps();
   try { if (m) localStorage.setItem("ellalon_map", m.id); } catch {}
   $("#mapTitle").textContent = m ? m.name : "No map";
   $("#mapBack").classList.toggle("hidden", !mapHist.length);
@@ -202,8 +212,8 @@ function mapDrawItems() {
     if (it.type !== "link" && it.type !== "label" && n[st.s] !== undefined) n[st.s]++;
     if (it.type === "camera") cones += cone(it, w, h, colour);
     const name = itemName(it);
-    if (it.type === "label") return `<div class="mitem mlabel ${mapSel === it.id ? "sel" : ""}" data-id="${it.id}" style="left:${it.x * 100}%;top:${it.y * 100}%;--s:${it.size || 1}">${esc(name)}</div>`;
-    return `<div class="mitem ${st.s} ${mapSel === it.id ? "sel" : ""} t-${it.type}" data-id="${it.id}" title="${esc(name)}${st.text ? " - " + esc(st.text) : ""}"
+    if (it.type === "label") return `<div class="mitem mlabel ${mapSelSet.has(it.id) ? "sel" : ""}" data-id="${it.id}" style="left:${it.x * 100}%;top:${it.y * 100}%;--s:${it.size || 1}">${esc(name)}</div>`;
+    return `<div class="mitem ${st.s} ${mapSelSet.has(it.id) ? "sel" : ""} t-${it.type}" data-id="${it.id}" title="${esc(name)}${st.text ? " - " + esc(st.text) : ""}"
         style="left:${it.x * 100}%;top:${it.y * 100}%;--c:${colour};--s:${it.size || 1}">
       ${(() => { const [h, pic] = iconHtml(it, st); return `<span class="mbadge ${pic ? "pic" : ""}">${h}</span>`; })()}${it.show_label !== false ? `<span class="mname">${esc(name)}</span>` : ""}</div>`;
   }).join("");
@@ -222,20 +232,30 @@ function mapItemDown(ev, id) {
   ev.stopPropagation(); ev.preventDefault();
   const it = mapCur.items.find((i) => i.id === id), el = ev.currentTarget;
   if (!mapEditing) { mapPopup(it); return; }
-  mapSel = id; mapProps();
-  $("#mapItems").querySelectorAll(".mitem").forEach((e) => e.classList.toggle("sel", e.dataset.id === id));
+  if (ev.ctrlKey || ev.metaKey || ev.shiftKey) {          // add to / remove from the selection
+    if (mapSelSet.has(id)) { mapSelSet.delete(id); mapSelect([], true); } else mapSelect([id], true);
+    return;
+  }
+  if (!mapSelSet.has(id)) mapSelect([id]); else { mapSel = id; mapProps(); }
   const st = $("#mapStage").getBoundingClientRect(), x0 = ev.clientX, y0 = ev.clientY;
+  const group = selItems().map((i) => ({ i, x: i.x, y: i.y, el: $(`#mapItems .mitem[data-id="${i.id}"]`) }));
   let moved = false;
   try { el.setPointerCapture(ev.pointerId); } catch {}
   el.onpointermove = (e) => {
     if (!moved && Math.hypot(e.clientX - x0, e.clientY - y0) < 3) return;
     moved = true;
-    it.x = Math.min(1, Math.max(0, (e.clientX - st.left) / st.width));
-    it.y = Math.min(1, Math.max(0, (e.clientY - st.top) / st.height));
-    el.style.left = it.x * 100 + "%"; el.style.top = it.y * 100 + "%";
-    if (it.type === "camera") { const [w, h] = mapNat(); $("#mapCones").innerHTML = mapCur.items.filter((i) => i.type === "camera").map((i) => cone(i, w, h, (MAP_STATES[mapStatus(i).s] || MAP_STATES.ok)[0])).join(""); }
+    const dx = (e.clientX - x0) / st.width, dy = (e.clientY - y0) / st.height;
+    for (const g of group) {                               // the whole selection moves together
+      g.i.x = Math.min(1, Math.max(0, g.x + dx)); g.i.y = Math.min(1, Math.max(0, g.y + dy));
+      if (g.el) { g.el.style.left = g.i.x * 100 + "%"; g.el.style.top = g.i.y * 100 + "%"; }
+    }
+    if (group.some((g) => g.i.type === "camera")) mapDrawCones();
   };
-  el.onpointerup = () => { el.onpointermove = el.onpointerup = null; if (moved) mapSave(); };
+  el.onpointerup = () => { el.onpointermove = el.onpointerup = null; if (moved) { mapSave(); mapProps(); } };
+}
+function mapDrawCones() {
+  const [w, h] = mapNat();
+  $("#mapCones").innerHTML = mapCur.items.filter((i) => i.type === "camera").map((i) => cone(i, w, h, (MAP_STATES[mapStatus(i).s] || MAP_STATES.ok)[0])).join("");
 }
 // pan by dragging the background, zoom with the wheel
 (() => {
@@ -243,12 +263,13 @@ function mapItemDown(ev, id) {
   v.addEventListener("wheel", (e) => { if (!mapCur) return; e.preventDefault(); mapZoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY); }, { passive: false });
   v.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".mitem") || e.button !== 0) return;
+    if (mapEditing && (e.shiftKey || mapBoxMode)) { mapBoxSelect(e); return; }
     const x0 = e.clientX, y0 = e.clientY, sl = v.scrollLeft, stp = v.scrollTop;
     let moved = false;
     const mv = (ev) => { if (Math.abs(ev.clientX - x0) + Math.abs(ev.clientY - y0) > 3) moved = true; v.scrollLeft = sl - (ev.clientX - x0); v.scrollTop = stp - (ev.clientY - y0); };
     const up = () => {
       window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); v.classList.remove("panning");
-      if (!moved) { mapClosePop(); if (mapEditing && mapSel) { mapSel = null; mapProps(); mapDrawItems(); } }
+      if (!moved) { mapClosePop(); if (mapEditing && mapSelSet.size) { mapUnselect(); mapProps(); mapDrawItems(); } }
     };
     v.classList.add("panning"); window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
   });
@@ -262,13 +283,14 @@ function mapItemDown(ev, id) {
     const x = (e.clientX - st.left) / st.width, y = (e.clientY - st.top) / st.height;
     if (x < 0 || y < 0 || x > 1 || y > 1) return;
     const it = { id: Math.random().toString(36).slice(2, 12), type: d.type, ref: d.ref ?? null, x, y, angle: 0, fov: 70, range: d.type === "camera" ? 0.12 : 0, size: 1, label: d.type === "label" ? "Text" : null, show_label: true };
-    mapCur.items = [...(mapCur.items || []), it]; mapSel = it.id;
+    mapCur.items = [...(mapCur.items || []), it]; mapSelSet.clear(); mapSelSet.add(it.id); mapSel = it.id;
     mapDrawItems(); mapProps(); mapSave();
   });
   window.addEventListener("resize", () => { if (mapCur && !$("#tab-maps").classList.contains("hidden")) mapSize(); });
   document.addEventListener("keydown", (e) => {
     if ($("#tab-maps").classList.contains("hidden") || /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) return;
-    if (mapEditing && mapSel && (e.key === "Delete" || e.key === "Backspace")) { mapRemoveSel(); e.preventDefault(); }
+    if (mapEditing && mapSelSet.size && (e.key === "Delete" || e.key === "Backspace")) { mapRemoveSel(); e.preventDefault(); }
+    if (mapEditing && mapCur && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") { mapSelect(mapCur.items.map((i) => i.id)); e.preventDefault(); }
     if (e.key === "Escape") mapClosePop();
   });
 })();
@@ -343,34 +365,112 @@ function mapPalette() {
   $("#mapPalList").querySelectorAll(".palitem").forEach((p) => (p.ondragstart = (e) => { e.dataTransfer.setData("text/plain", p.dataset.d); e.dataTransfer.effectAllowed = "copy"; }));
 }
 $("#mapSearch").oninput = mapPalette;
+let mapBoxMode = false;
+function mapBoxSelect(e) {                 // drag a box: everything inside it is selected
+  const v = $("#mapView"), wrap = $(".mapwrap").getBoundingClientRect(), box = document.createElement("div");
+  box.className = "selbox"; $(".mapwrap").appendChild(box);
+  const x0 = e.clientX, y0 = e.clientY, add = e.ctrlKey || e.metaKey || e.shiftKey && mapBoxMode;
+  const mv = (ev) => {
+    Object.assign(box.style, { left: Math.min(x0, ev.clientX) - wrap.left + "px", top: Math.min(y0, ev.clientY) - wrap.top + "px",
+      width: Math.abs(ev.clientX - x0) + "px", height: Math.abs(ev.clientY - y0) + "px" });
+  };
+  const up = (ev) => {
+    window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); box.remove();
+    const l = Math.min(x0, ev.clientX), r = Math.max(x0, ev.clientX), t = Math.min(y0, ev.clientY), b = Math.max(y0, ev.clientY);
+    if (r - l < 4 && b - t < 4) { mapUnselect(); mapProps(); mapDrawItems(); return; }
+    const ids = [...$("#mapItems").querySelectorAll(".mitem")].filter((el) => {
+      const q = el.getBoundingClientRect(), cx = (q.left + q.right) / 2, cy = (q.top + q.bottom) / 2;
+      return cx >= l && cx <= r && cy >= t && cy <= b;
+    }).map((el) => el.dataset.id);
+    mapSelect(ids, add);
+  };
+  window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+}
+const TYPE_ONE = { camera: "camera", door: "door", input: "input", output: "output", device: "device", link: "map link", label: "text" };
+// a slider with its number next to it; unit shown after the number; `scale` turns stored value into shown value
+function prow(label, k, min, max, step, val, unit = "", scale = 1, mixed = false) {
+  const shown = mixed ? "" : +(val * scale).toFixed(step < 1 ? (String(step).split(".")[1] || "").length : 0);
+  return `<div class="prow"><span class="pl">${label}</span>
+    <input type="range" data-k="${k}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" value="${mixed ? (min + max) / 2 : val}" class="${mixed ? "mixed" : ""}">
+    <span class="pn"><input type="number" data-n="${k}" data-scale="${scale}" min="${+(min * scale).toFixed(3)}" max="${+(max * scale).toFixed(3)}" step="${+(step * scale).toFixed(3)}" value="${shown}" placeholder="${mixed ? "mixed" : ""}">${unit}</span></div>`;
+}
 function mapProps() {
-  const box = $("#mapProps"), it = mapEditing && mapCur?.items.find((i) => i.id === mapSel);
-  if (!it) { box.classList.add("hidden"); return; }
-  const cam = it.type === "camera";
-  box.innerHTML = `<div class="pophead"><b>${esc(itemName(it))}</b><button class="tclose" onclick="mapSel=null;mapProps();mapDrawItems()">×</button></div>
-    <label>${it.type === "label" ? "Text" : "Name on the map (empty = its own name)"}<input data-k="label" value="${esc(it.label || "")}" maxlength="120"></label>
-    ${cam ? `<label>Direction <span class="muted" id="mpA">${Math.round(it.angle)}°</span><input type="range" data-k="angle" min="0" max="359" value="${(it.angle + 360) % 360}"></label>
-    <label>View angle <span class="muted" id="mpF">${Math.round(it.fov)}°</span><input type="range" data-k="fov" min="10" max="360" value="${it.fov}"></label>
-    <label>View distance<input type="range" data-k="range" min="0" max="0.6" step="0.005" value="${it.range}"></label>` : ""}
-    ${it.type !== "label" ? `<div class="iconrow"><span class="mbadge ${iconHtml(it, mapStatus(it))[1] ? "pic" : ""}" style="--c:${(MAP_STATES[mapStatus(it).s] || MAP_STATES.ok)[0]}">${iconHtml(it, mapStatus(it))[0]}</span>
-      <span class="grow small">${esc(it.icon ? (it.icon.startsWith("b:") ? ICON_BY_ID[it.icon.slice(2)]?.label : mapIcons.find((x) => "c:" + x.id === it.icon)?.name) || "Icon" : "Default icon")}</span>
-      <button type="button" class="small" onclick="iconPick()">Choose icon…</button></div>` : ""}
-    <label>Icon size<input type="range" data-k="size" min="0.4" max="3" step="0.1" value="${it.size || 1}"></label>
-    ${it.type !== "label" ? `<label class="inline"><input type="checkbox" data-k="show_label" ${it.show_label !== false ? "checked" : ""}> Show the name</label>` : ""}
-    <button class="danger small" onclick="mapRemoveSel()">Remove from map</button>`;
+  const box = $("#mapProps"), sel = mapEditing ? selItems() : [];
+  $(".mapwrap").classList.toggle("withprops", !!sel.length);
+  if (!sel.length) { box.classList.add("hidden"); return; }
+  const one = sel.length === 1 ? sel[0] : null, cams = sel.filter((i) => i.type === "camera"), icons = sel.filter((i) => i.type !== "label");
+  const same = (k, list = sel, d = undefined) => { const v = list.map((i) => i[k] ?? d); return v.every((x) => x === v[0]) ? [v[0], false] : [v[0], true]; };
+  const [size, sizeMix] = same("size", sel, 1), [ang, angMix] = same("angle", cams, 0), [fov, fovMix] = same("fov", cams, 70), [rng, rngMix] = same("range", cams, 0.12);
+  const kinds = Object.entries(sel.reduce((a, i) => ((a[i.type] = (a[i.type] || 0) + 1), a), {})).map(([t, n]) => `${n} ${TYPE_ONE[t]}${n > 1 ? "s" : ""}`).join(", ");
+  const shownCount = icons.filter((i) => i.show_label !== false).length;
+  const st = one ? mapStatus(one) : null;
+  box.innerHTML = `<div class="pophead"><b>${one ? esc(itemName(one)) : `${sel.length} objects selected`}</b><button class="tclose" title="Unselect" onclick="mapUnselect();mapProps();mapDrawItems()">×</button></div>
+    ${one ? `<div class="small muted">${esc(TYPE_ONE[one.type])}${st?.text ? " · " + esc(st.text) : ""}</div>` : `<div class="small muted">${esc(kinds)}</div>`}
+    ${one ? `<label class="pfield"><span class="pl">${one.type === "label" ? "Text" : "Name on the map"}</span><input data-k="label" value="${esc(one.label || "")}" maxlength="120" placeholder="${one.type === "label" ? "" : esc(itemName({ ...one, label: null }))}"></label>` : ""}
+    ${icons.length ? `<div class="psec">Icon</div>
+      <div class="iconrow">${one && one.type !== "label" ? `<span class="mbadge ${iconHtml(one, st)[1] ? "pic" : ""}" style="--c:${(MAP_STATES[st.s] || MAP_STATES.ok)[0]}">${iconHtml(one, st)[0]}</span>` : ""}
+        <span class="grow small">${one ? esc(one.icon ? (one.icon.startsWith("b:") ? ICON_BY_ID[one.icon.slice(2)]?.label : mapIcons.find((x) => "c:" + x.id === one.icon)?.name) || "Icon" : "Default icon") : `for ${icons.length} object(s)`}</span>
+        <button type="button" class="small" onclick="iconPick()">Choose icon…</button></div>` : ""}
+    ${prow("Size", "size", 0.4, 3, 0.1, size, "×", 1, sizeMix)}
+    ${icons.length ? `<label class="inline small pchk"><input type="checkbox" data-k="show_label" ${shownCount === icons.length ? "checked" : ""}> Show the name${shownCount && shownCount < icons.length ? ` <span class="muted">(${shownCount} of ${icons.length} now)</span>` : ""}</label>` : ""}
+    ${cams.length ? `<div class="psec">Camera view${!one && cams.length < sel.length ? ` <span class="muted">(${cams.length} camera${cams.length > 1 ? "s" : ""})</span>` : ""}</div>
+      ${prow("Direction", "angle", 0, 359, 1, (ang + 360) % 360, "°", 1, angMix)}
+      ${prow("View angle", "fov", 10, 360, 1, fov, "°", 1, fovMix)}
+      ${prow("Distance", "range", 0, 0.6, 0.005, rng, "%", 100, rngMix)}` : ""}
+    ${!one ? `<div class="psec">Arrange</div>
+      <div class="pbtns2"><button type="button" class="ghost small" onclick="mapArrange('row')" title="Same height">⇿ In a row</button>
+        <button type="button" class="ghost small" onclick="mapArrange('col')" title="Same left-right position">⇕ In a column</button>
+        <button type="button" class="ghost small" onclick="mapArrange('spread')" title="Equal gaps, in the direction they are spread">↔ Space evenly</button></div>` : ""}
+    <div class="psec">Select</div>
+    <div class="pbtns2">${[...new Set((mapCur.items || []).map((i) => i.type))].map((t) => `<button type="button" class="ghost small" onclick="mapSelectType('${t}', event)">All ${TYPE_ONE[t]}s</button>`).join("")}
+      <button type="button" class="ghost small" onclick="mapSelect(mapCur.items.map((i) => i.id))">Everything</button></div>
+    <p class="muted small">Ctrl / Shift + click adds to the selection; Shift + drag on the plan (or ⬚ Select) draws a selection box; Delete removes.</p>
+    <button class="danger small" onclick="mapRemoveSel()">Remove ${one ? "from map" : `${sel.length} objects from map`}</button>`;
   box.classList.remove("hidden");
-  box.querySelectorAll("[data-k]").forEach((inp) => (inp.oninput = () => {
-    const k = inp.dataset.k;
-    it[k] = inp.type === "checkbox" ? inp.checked : inp.type === "range" ? +inp.value : inp.value.trim() || null;
-    if (k === "angle") $("#mpA").textContent = Math.round(it.angle) + "°";
-    if (k === "fov") $("#mpF").textContent = Math.round(it.fov) + "°";
+  const apply = (k, v) => {
+    const list = ["angle", "fov", "range"].includes(k) ? cams : k === "show_label" ? icons : sel;
+    list.forEach((i) => { i[k] = v; });
     mapDrawItems(); mapSave();
+  };
+  box.querySelectorAll("input[data-k]").forEach((inp) => (inp.oninput = () => {
+    const k = inp.dataset.k;
+    if (inp.type === "checkbox") return apply(k, inp.checked);
+    if (inp.type === "range") {
+      inp.classList.remove("mixed");
+      const n = box.querySelector(`input[data-n="${k}"]`), sc = +inp.dataset.scale;
+      n.value = +(+inp.value * sc).toFixed(sc === 100 ? 1 : k === "size" ? 1 : 0); n.placeholder = "";
+      return apply(k, +inp.value);
+    }
+    one[k] = inp.value.trim() || null; mapDrawItems(); mapSave();
+  }));
+  box.querySelectorAll("input[data-n]").forEach((inp) => (inp.onchange = () => {
+    const k = inp.dataset.n, sc = +inp.dataset.scale, r = box.querySelector(`input[data-k="${k}"]`);
+    if (inp.value === "") return;
+    let v = +inp.value / sc;
+    v = Math.min(+r.max, Math.max(+r.min, v));
+    r.value = v; r.classList.remove("mixed"); inp.value = +(v * sc).toFixed(sc === 100 ? 1 : k === "size" ? 1 : 0);
+    apply(k, v);
   }));
 }
 window.mapProps = mapProps;
-window.mapRemoveSel = () => {
-  if (!mapCur || !mapSel) return;
-  mapCur.items = mapCur.items.filter((i) => i.id !== mapSel); mapSel = null;
+window.mapSelect = mapSelect;
+window.mapUnselect = mapUnselect;
+window.mapSelectType = (t, ev) => mapSelect(mapCur.items.filter((i) => i.type === t).map((i) => i.id), ev?.ctrlKey || ev?.shiftKey);
+window.mapArrange = (how) => {
+  const sel = selItems(); if (sel.length < 2) return;
+  if (how === "row") { const y = sel.reduce((a, i) => a + i.y, 0) / sel.length; sel.forEach((i) => (i.y = y)); }
+  if (how === "col") { const x = sel.reduce((a, i) => a + i.x, 0) / sel.length; sel.forEach((i) => (i.x = x)); }
+  if (how === "spread") {
+    const xs = sel.map((i) => i.x), ys = sel.map((i) => i.y), k = Math.max(...xs) - Math.min(...xs) >= Math.max(...ys) - Math.min(...ys) ? "x" : "y";
+    const sorted = [...sel].sort((a, b) => a[k] - b[k]), lo = sorted[0][k], hi = sorted[sorted.length - 1][k];
+    sorted.forEach((i, n) => (i[k] = lo + (hi - lo) * n / (sorted.length - 1)));
+  }
+  mapDrawItems(); mapSave(); mapProps();
+};
+window.mapRemoveSel = async () => {
+  const sel = selItems(); if (!mapCur || !sel.length) return;
+  if (sel.length > 1 && !(await ask(`Remove ${sel.length} objects from this map? (The cameras and devices themselves are not affected.)`, { ok: "Remove", danger: true }))) return;
+  mapCur.items = mapCur.items.filter((i) => !mapSelSet.has(i.id)); mapUnselect();
   mapProps(); mapDrawItems(); mapSave();
 };
 function mapSave() {
@@ -390,7 +490,7 @@ $("#mapEdit").onclick = () => {
   $("#mapEditTools").classList.toggle("hidden", !mapEditing);
   $("#mapPalette").classList.toggle("hidden", !mapEditing);
   $("#mapView").classList.toggle("editing", mapEditing);
-  mapSel = null; mapClosePop(); mapProps(); mapDrawItems();
+  mapUnselect(); mapClosePop(); mapProps(); mapDrawItems();
   if (mapEditing) mapPalette();
 };
 $("#mapNew").onclick = async () => {
@@ -450,8 +550,9 @@ map3dUi();
 let ipCat = null;
 const TYPE_NAMES = { camera: "cameras", door: "doors", input: "inputs", output: "outputs", device: "devices", link: "map links" };
 window.iconPick = () => {
-  const it = mapCur?.items.find((i) => i.id === mapSel); if (!it) return;
-  $("#ipAll").parentElement.querySelector("span").textContent = `Use this icon for all ${TYPE_NAMES[it.type] || "objects of this kind"} on this map`;
+  const sel = selItems().filter((i) => i.type !== "label"), it = sel.find((i) => i.id === mapSel) || sel[0]; if (!it) return;
+  const types = [...new Set(sel.map((i) => i.type))];
+  $("#ipAll").parentElement.querySelector("span").textContent = types.length === 1 ? `Use this icon for all ${TYPE_NAMES[it.type] || "objects of this kind"} on this map` : `Use this icon for all ${types.map((t) => TYPE_NAMES[t] || t).join(" and ")} on this map`;
   $("#ipAll").checked = false; $("#ipSearch").value = ""; $("#ipMsg").textContent = "";
   $("#ipImport").classList.toggle("hidden", me.role !== "admin");
   ipCat = ipCat || Object.keys(ICON_LIB)[0];
@@ -462,7 +563,7 @@ function ipCats() {
   return [...Object.keys(ICON_LIB).map((c) => ({ c, n: ICON_LIB[c].length, custom: false })), ...custom.map((c) => ({ c, n: mapIcons.filter((x) => x.category === c).length, custom: true }))];
 }
 function ipRender() {
-  const q = $("#ipSearch").value.trim().toLowerCase(), it = mapCur?.items.find((i) => i.id === mapSel);
+  const q = $("#ipSearch").value.trim().toLowerCase(), it = mapCur?.items.find((i) => i.id === mapSel) || selItems()[0];
   const cats = ipCats();
   if (!cats.some((x) => x.c === ipCat)) ipCat = cats[0].c;
   $("#ipCats").innerHTML = cats.map((x) => `<button type="button" class="mapli ${!q && x.c === ipCat ? "active" : ""}" data-c="${esc(x.c)}"><span>${x.custom ? "⬆ " : ""}${esc(x.c)}</span><small class="muted">${x.n}</small></button>`).join("");
@@ -472,7 +573,7 @@ function ipRender() {
   const custom = (cat) => mapIcons.filter((x) => x.category === cat).map((x) => ({ key: "c:" + x.id, label: x.name, html: `<img src="${x.url}" alt="" loading="lazy">`, pic: true, id: x.id }));
   if (q) list = [...Object.keys(ICON_LIB).flatMap(builtin), ...[...new Set(mapIcons.map((x) => x.category))].flatMap(custom)].filter((x) => x.label.toLowerCase().includes(q));
   else list = ICON_LIB[ipCat] ? builtin(ipCat) : custom(ipCat);
-  const cur = it?.icon || "";
+  const cur = selItems().every((i) => (i.icon || "") === (it?.icon || "")) ? it?.icon || "" : "-";
   $("#ipGrid").innerHTML = `<button type="button" class="ipitem ${!cur ? "on" : ""}" data-k=""><span class="mbadge">${MAPI(it ? itemIcon(it, mapStatus(it)) : MI.device)}</span><span>Default</span></button>`
     + list.map((x) => `<button type="button" class="ipitem ${cur === x.key ? "on" : ""}" data-k="${esc(x.key)}" title="${esc(x.label)}"><span class="mbadge ${x.pic ? "pic" : ""}">${x.html}</span><span>${esc(x.label)}</span>
       ${x.id && me.role === "admin" ? `<i class="ipdel" data-id="${x.id}" title="Delete this imported icon">×</i>` : ""}</button>`).join("")
@@ -485,8 +586,9 @@ function ipRender() {
   else $("#ipDelCat").classList.toggle("hidden", me.role !== "admin");
 }
 function ipApply(icon) {
-  const it = mapCur?.items.find((i) => i.id === mapSel); if (!it) return;
-  const targets = $("#ipAll").checked ? mapCur.items.filter((i) => i.type === it.type) : [it];
+  const sel = selItems().filter((i) => i.type !== "label"); if (!sel.length) return;
+  const types = new Set(sel.map((i) => i.type));
+  const targets = $("#ipAll").checked ? mapCur.items.filter((i) => types.has(i.type)) : sel;
   targets.forEach((t) => { t.icon = icon; });
   $("#iconDialog").close(); mapDrawItems(); mapProps(); mapSave();
 }
@@ -523,3 +625,6 @@ $("#ipGo").onclick = async () => {
     $("#ipFiles").value = ""; $("#ipImportBox").classList.add("hidden"); ipRender();
   } catch (err) { msg.className = "small err"; msg.textContent = err.message; }
 };
+
+$("#mapBoxBtn").onclick = () => { mapBoxMode = !mapBoxMode; $("#mapBoxBtn").classList.toggle("on", mapBoxMode); $("#mapView").classList.toggle("boxmode", mapBoxMode); };
+$("#mapEdit").addEventListener("click", () => { if (!mapEditing && mapBoxMode) $("#mapBoxBtn").onclick(); });

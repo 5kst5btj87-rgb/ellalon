@@ -300,8 +300,21 @@ header.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;g
 .mapview.editing .mitem{cursor:move}
 .mappop,.mapprops{position:absolute;z-index:10;width:340px;padding:12px;border-radius:14px;cursor:default;
   background:linear-gradient(180deg,#1f2836,#151b25);border:1px solid #2f3a4d;box-shadow:0 20px 50px rgba(0,0,0,.6),0 1px 0 rgba(255,255,255,.07) inset}
-.mapprops{right:12px;top:12px;width:280px;display:grid;gap:8px;max-height:calc(100% - 24px);overflow:auto}
-.mapprops label{display:grid;gap:4px;font-size:12.5px}.mapprops label.inline{display:flex}
+.mapprops{right:12px;top:12px;bottom:auto;width:min(360px,calc(100% - 24px));display:flex;flex-direction:column;gap:9px;max-height:calc(100% - 24px);overflow:auto;box-sizing:border-box}
+.mapprops>*{min-width:0}
+.mapprops .pfield{display:grid;gap:4px;font-size:12.5px}.mapprops .pfield input{width:100%;box-sizing:border-box}
+.mapprops .pchk{display:flex;gap:7px;align-items:center}
+.psec{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-top:1px solid var(--line);padding-top:9px;margin-top:2px}
+.prow{display:grid;grid-template-columns:78px minmax(0,1fr) auto;gap:10px;align-items:center;font-size:12.5px}
+.prow input[type=range]{width:100%;margin:0}.prow input[type=range].mixed{opacity:.45}
+.pn{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font-size:12px}
+.pn input{width:64px;padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums}
+.pbtns2{display:flex;flex-wrap:wrap;gap:6px}
+.mapprops .iconrow{background:#0c1118;border:1px solid var(--line);border-radius:10px;padding:6px 8px;box-shadow:var(--sunken)}
+.mapprops>.danger{align-self:flex-start}
+.selbox{position:absolute;z-index:9;border:1.5px dashed #4cc38a;background:#4cc38a1f;pointer-events:none;border-radius:3px}
+.mapview.boxmode{cursor:crosshair}#mapBoxBtn.on{background:linear-gradient(180deg,#4cc38a,#2f9c69);color:#04210f}
+.mitem.sel .mbadge{outline:3px solid #fff;outline-offset:2px;box-shadow:0 0 0 7px #4cc38a66,0 4px 10px rgba(0,0,0,.55)}
 .pophead{display:flex;align-items:center;gap:6px;margin-bottom:4px}.pophead b{flex:1}
 .pophead .tclose{background:none;box-shadow:none;color:var(--muted);font-size:18px;padding:0 6px}
 .popvid{margin-top:8px;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden}.popvid iframe{width:100%;height:100%;border:0}
@@ -495,3 +508,9 @@ table.mdt{border-collapse:collapse;width:100%;margin:8px 0 16px}table.mdt th,tab
 .ipdel{position:absolute;top:2px;right:6px;font-style:normal;color:var(--muted);font-size:15px;display:none}.ipitem:hover .ipdel{display:block}.ipdel:hover{color:#ff4d4f}
 .ipimport{display:grid;grid-template-columns:1fr 220px auto;gap:10px;align-items:end;padding:10px;border-radius:12px;background:#0c1118;border:1px solid var(--line);margin:6px 0}
 .ipimport label{display:grid;gap:4px}
+
+/* the object panel is a column of its own next to the map (the map never hides under it) */
+.mapwrap.withprops .mapview{right:376px}
+.mapwrap .mapprops{top:0;right:0;bottom:0;max-height:none;width:364px;border-radius:16px}
+@media (max-width:1100px){.mapwrap.withprops .mapview{right:0}.mapwrap .mapprops{bottom:auto;max-height:100%}}
+.iconrow button{white-space:nowrap;flex:none}.iconrow .grow{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
