@@ -652,6 +652,20 @@
 
 <dialog id="aiLive" class="wide"><form method="dialog"><h3 id="aiLiveTitle"></h3><div class="popvid" id="aiLiveVid"></div><button class="ghost">Close</button></form></dialog>
 
+<dialog id="iconDialog" class="xwide"><form method="dialog">
+  <div class="maphead"><h3>Choose an icon</h3><span class="grow"></span><input id="ipSearch" placeholder="Search all icons…" style="width:240px">
+    <button type="button" id="ipImport" class="ghost small">⬆ Import icons…</button></div>
+  <div id="ipImportBox" class="ipimport hidden">
+    <label class="small">Icon files - SVG, PNG, JPG, WEBP, or a ZIP with many (folders in the ZIP become categories)<input type="file" id="ipFiles" multiple accept=".svg,.png,.jpg,.jpeg,.webp,.gif,.zip,image/*,application/zip"></label>
+    <label class="small">Category<input id="ipCatName" list="ipCatList" maxlength="60"><datalist id="ipCatList"></datalist></label>
+    <button type="button" id="ipGo" class="small">Import</button>
+  </div>
+  <p id="ipMsg" class="small"></p>
+  <div class="ipwrap"><div id="ipCats" class="ipcats"></div><div><div id="ipGrid" class="ipgrid"></div>
+    <button type="button" id="ipDelCat" class="danger small hidden">Delete this imported category</button></div></div>
+  <div class="row"><label class="inline small"><input type="checkbox" id="ipAll"> <span>Use this icon for all objects of this kind on this map</span></label><span class="grow"></span><button class="ghost">Close</button></div>
+</form></dialog>
+
 <dialog id="asCamDialog"><form method="dialog">
   <h3>People tagging per camera</h3>
   <p class="muted small">Tagged cameras describe every person they see (man/woman, hair, hat, glasses, clothes, shoes, bag and colours) for the search in this tab.
@@ -692,6 +706,7 @@
   <button type="button" class="ghost" id="pwCancel">Cancel</button> <button>Save</button>
 </form></dialog>
 <script src="app.js"></script>
+<script src="icons.js"></script>
 <script src="maps.js"></script>
 <script src="analytics.js"></script>
 <script src="assistant.js"></script>

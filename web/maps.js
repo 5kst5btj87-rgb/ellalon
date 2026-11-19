@@ -33,6 +33,7 @@ async function loadMaps() {
   $("#mapAdmin").classList.toggle("hidden", !admin);
   $("#mapNew").classList.toggle("hidden", !admin);
   $("#mapLegend").innerHTML = Object.entries(MAP_STATES).map(([k, [c, t]]) => `<div><span class="mdot" style="--c:${c}"></span>${t}</div>`).join("");
+  api("/api/maps/icons").then((l) => { mapIcons = l; if (mapCur) mapDrawItems(); }).catch(() => {});
   try { maps = await api("/api/maps"); } catch (err) { maps = []; $("#mapList").innerHTML = `<p class="err small">${esc(errText(err))}</p>`; }
   await mapRefreshStatus(false);
   const want = mapCur?.id || (() => { try { return localStorage.getItem("ellalon_map"); } catch { return null; } })();
@@ -110,6 +111,12 @@ function itemName(it) {
   if (it.type === "link") return maps.find((x) => x.id === it.ref)?.name || "Map";
   if (it.type === "label") return "Text";
   return devOf(it)?.name || "Device";
+}
+let mapIcons = [];                       // imported icons: [{id, name, category, url}]
+function iconHtml(it, st) {               // -> [inner html, is a picture]
+  if (it.icon?.startsWith("c:")) { const ic = mapIcons.find((x) => x.id === it.icon.slice(2)); if (ic) return [`<img src="${ic.url}" alt="" draggable="false">`, true]; }
+  if (it.icon?.startsWith("b:") && ICON_BY_ID[it.icon.slice(2)]) return [MAPI(ICON_BY_ID[it.icon.slice(2)].svg), false];
+  return [MAPI(itemIcon(it, st)), false];
 }
 function itemIcon(it, st) {
   if (it.type === "door" || it.type === "device" && devOf(it)?.kind === "door") return MI["door_" + (st.door || "locked")];
@@ -198,7 +205,7 @@ function mapDrawItems() {
     if (it.type === "label") return `<div class="mitem mlabel ${mapSel === it.id ? "sel" : ""}" data-id="${it.id}" style="left:${it.x * 100}%;top:${it.y * 100}%;--s:${it.size || 1}">${esc(name)}</div>`;
     return `<div class="mitem ${st.s} ${mapSel === it.id ? "sel" : ""} t-${it.type}" data-id="${it.id}" title="${esc(name)}${st.text ? " - " + esc(st.text) : ""}"
         style="left:${it.x * 100}%;top:${it.y * 100}%;--c:${colour};--s:${it.size || 1}">
-      <span class="mbadge">${MAPI(itemIcon(it, st))}</span>${it.show_label !== false ? `<span class="mname">${esc(name)}</span>` : ""}</div>`;
+      ${(() => { const [h, pic] = iconHtml(it, st); return `<span class="mbadge ${pic ? "pic" : ""}">${h}</span>`; })()}${it.show_label !== false ? `<span class="mname">${esc(name)}</span>` : ""}</div>`;
   }).join("");
   $("#mapCones").innerHTML = cones;
   const parts = [`${items.filter((i) => !["link", "label"].includes(i.type)).length} objects`];
@@ -219,7 +226,7 @@ function mapItemDown(ev, id) {
   $("#mapItems").querySelectorAll(".mitem").forEach((e) => e.classList.toggle("sel", e.dataset.id === id));
   const st = $("#mapStage").getBoundingClientRect(), x0 = ev.clientX, y0 = ev.clientY;
   let moved = false;
-  el.setPointerCapture(ev.pointerId);
+  try { el.setPointerCapture(ev.pointerId); } catch {}
   el.onpointermove = (e) => {
     if (!moved && Math.hypot(e.clientX - x0, e.clientY - y0) < 3) return;
     moved = true;
@@ -345,6 +352,9 @@ function mapProps() {
     ${cam ? `<label>Direction <span class="muted" id="mpA">${Math.round(it.angle)}°</span><input type="range" data-k="angle" min="0" max="359" value="${(it.angle + 360) % 360}"></label>
     <label>View angle <span class="muted" id="mpF">${Math.round(it.fov)}°</span><input type="range" data-k="fov" min="10" max="360" value="${it.fov}"></label>
     <label>View distance<input type="range" data-k="range" min="0" max="0.6" step="0.005" value="${it.range}"></label>` : ""}
+    ${it.type !== "label" ? `<div class="iconrow"><span class="mbadge ${iconHtml(it, mapStatus(it))[1] ? "pic" : ""}" style="--c:${(MAP_STATES[mapStatus(it).s] || MAP_STATES.ok)[0]}">${iconHtml(it, mapStatus(it))[0]}</span>
+      <span class="grow small">${esc(it.icon ? (it.icon.startsWith("b:") ? ICON_BY_ID[it.icon.slice(2)]?.label : mapIcons.find((x) => "c:" + x.id === it.icon)?.name) || "Icon" : "Default icon")}</span>
+      <button type="button" class="small" onclick="iconPick()">Choose icon…</button></div>` : ""}
     <label>Icon size<input type="range" data-k="size" min="0.4" max="3" step="0.1" value="${it.size || 1}"></label>
     ${it.type !== "label" ? `<label class="inline"><input type="checkbox" data-k="show_label" ${it.show_label !== false ? "checked" : ""}> Show the name</label>` : ""}
     <button class="danger small" onclick="mapRemoveSel()">Remove from map</button>`;
@@ -434,3 +444,82 @@ $("#mapTurnL").onclick = () => { mapRz -= 30; map3dUi(); };
 $("#mapTurnR").onclick = () => { mapRz += 30; map3dUi(); };
 $("#mapEdit").addEventListener("click", () => setTimeout(map3dUi, 0));
 map3dUi();
+
+
+// ---- icon picker and import
+let ipCat = null;
+const TYPE_NAMES = { camera: "cameras", door: "doors", input: "inputs", output: "outputs", device: "devices", link: "map links" };
+window.iconPick = () => {
+  const it = mapCur?.items.find((i) => i.id === mapSel); if (!it) return;
+  $("#ipAll").parentElement.querySelector("span").textContent = `Use this icon for all ${TYPE_NAMES[it.type] || "objects of this kind"} on this map`;
+  $("#ipAll").checked = false; $("#ipSearch").value = ""; $("#ipMsg").textContent = "";
+  $("#ipImport").classList.toggle("hidden", me.role !== "admin");
+  ipCat = ipCat || Object.keys(ICON_LIB)[0];
+  ipRender(); $("#iconDialog").showModal();
+};
+function ipCats() {
+  const custom = [...new Set(mapIcons.map((x) => x.category))];
+  return [...Object.keys(ICON_LIB).map((c) => ({ c, n: ICON_LIB[c].length, custom: false })), ...custom.map((c) => ({ c, n: mapIcons.filter((x) => x.category === c).length, custom: true }))];
+}
+function ipRender() {
+  const q = $("#ipSearch").value.trim().toLowerCase(), it = mapCur?.items.find((i) => i.id === mapSel);
+  const cats = ipCats();
+  if (!cats.some((x) => x.c === ipCat)) ipCat = cats[0].c;
+  $("#ipCats").innerHTML = cats.map((x) => `<button type="button" class="mapli ${!q && x.c === ipCat ? "active" : ""}" data-c="${esc(x.c)}"><span>${x.custom ? "⬆ " : ""}${esc(x.c)}</span><small class="muted">${x.n}</small></button>`).join("");
+  $("#ipCats").querySelectorAll("button").forEach((b) => (b.onclick = () => { ipCat = b.dataset.c; $("#ipSearch").value = ""; ipRender(); }));
+  let list = [];
+  const builtin = (cat) => ICON_LIB[cat].map(([id, label, svg]) => ({ key: "b:" + id, label, html: MAPI(svg), pic: false }));
+  const custom = (cat) => mapIcons.filter((x) => x.category === cat).map((x) => ({ key: "c:" + x.id, label: x.name, html: `<img src="${x.url}" alt="" loading="lazy">`, pic: true, id: x.id }));
+  if (q) list = [...Object.keys(ICON_LIB).flatMap(builtin), ...[...new Set(mapIcons.map((x) => x.category))].flatMap(custom)].filter((x) => x.label.toLowerCase().includes(q));
+  else list = ICON_LIB[ipCat] ? builtin(ipCat) : custom(ipCat);
+  const cur = it?.icon || "";
+  $("#ipGrid").innerHTML = `<button type="button" class="ipitem ${!cur ? "on" : ""}" data-k=""><span class="mbadge">${MAPI(it ? itemIcon(it, mapStatus(it)) : MI.device)}</span><span>Default</span></button>`
+    + list.map((x) => `<button type="button" class="ipitem ${cur === x.key ? "on" : ""}" data-k="${esc(x.key)}" title="${esc(x.label)}"><span class="mbadge ${x.pic ? "pic" : ""}">${x.html}</span><span>${esc(x.label)}</span>
+      ${x.id && me.role === "admin" ? `<i class="ipdel" data-id="${x.id}" title="Delete this imported icon">×</i>` : ""}</button>`).join("")
+    + (!list.length ? `<p class="muted small">No icons ${q ? "match" : "in this category"}.</p>` : "");
+  $("#ipGrid").querySelectorAll(".ipitem").forEach((b) => (b.onclick = (e) => {
+    if (e.target.classList.contains("ipdel")) { ipDelete(e.target.dataset.id); return; }
+    ipApply(b.dataset.k || null);
+  }));
+  if (ICON_LIB[ipCat] || q) $("#ipDelCat").classList.add("hidden");
+  else $("#ipDelCat").classList.toggle("hidden", me.role !== "admin");
+}
+function ipApply(icon) {
+  const it = mapCur?.items.find((i) => i.id === mapSel); if (!it) return;
+  const targets = $("#ipAll").checked ? mapCur.items.filter((i) => i.type === it.type) : [it];
+  targets.forEach((t) => { t.icon = icon; });
+  $("#iconDialog").close(); mapDrawItems(); mapProps(); mapSave();
+}
+async function ipDelete(id) {
+  const used = maps.reduce((a, m) => a + (m.items || []).filter((i) => i.icon === "c:" + id).length, 0);
+  if (!(await ask(`Delete this imported icon?${used ? ` It is used ${used} time(s) on maps - those objects go back to the default icon.` : ""}`, { ok: "Delete", danger: true }))) return;
+  await api(`/api/maps/icons/${id}`, { method: "DELETE" }).catch((err) => notify(errText(err)));
+  mapIcons = mapIcons.filter((x) => x.id !== id); ipRender(); mapDrawItems();
+}
+$("#ipSearch").oninput = () => ipRender();
+$("#ipDelCat").onclick = async () => {
+  if (!(await ask(`Delete all imported icons in “${ipCat}”?`, { ok: "Delete all", danger: true }))) return;
+  await api(`/api/maps/icon-categories/${encodeURIComponent(ipCat)}`, { method: "DELETE" }).catch((err) => notify(errText(err)));
+  mapIcons = mapIcons.filter((x) => x.category !== ipCat); ipCat = null; ipRender(); mapDrawItems();
+};
+$("#ipImport").onclick = () => {
+  $("#ipImportBox").classList.toggle("hidden");
+  $("#ipCatName").value = ICON_LIB[ipCat] ? "My icons" : ipCat;
+  $("#ipCatList").innerHTML = [...new Set(mapIcons.map((x) => x.category))].map((c) => `<option value="${esc(c)}">`).join("");
+};
+$("#ipGo").onclick = async () => {
+  const files = [...$("#ipFiles").files], msg = $("#ipMsg");
+  if (!files.length) { msg.className = "small err"; msg.textContent = "Choose icon files (SVG, PNG, JPG) or a ZIP first."; return; }
+  const fd = new FormData(); files.forEach((f) => fd.append("files", f)); fd.append("category", $("#ipCatName").value.trim() || "My icons");
+  msg.className = "small muted"; msg.textContent = "Importing…";
+  try {
+    const r = await fetch("/api/maps/icons", { method: "POST", body: fd, headers: { Authorization: "Bearer " + token } });
+    if (!r.ok) { let d = `HTTP ${r.status}`; try { d = (await r.json()).detail || d; } catch {} throw new Error(d); }
+    const res = await r.json();
+    mapIcons = await api("/api/maps/icons");
+    msg.className = "small ok"; msg.textContent = `Imported ${res.imported} icon(s).${res.skipped.length ? " Skipped: " + res.skipped.join(", ") : ""}`;
+    ipCat = $("#ipCatName").value.trim() || "My icons";
+    if (!mapIcons.some((x) => x.category === ipCat)) ipCat = mapIcons[mapIcons.length - 1]?.category || ipCat;   // folders in a ZIP
+    $("#ipFiles").value = ""; $("#ipImportBox").classList.add("hidden"); ipRender();
+  } catch (err) { msg.className = "small err"; msg.textContent = err.message; }
+};

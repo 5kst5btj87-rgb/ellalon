@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Integer, LargeBinary, String
@@ -37,6 +37,15 @@ class MapRow(Base):
     image_version: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class IconRow(Base):
+    __tablename__ = "map_icons"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    category: Mapped[str] = mapped_column(String(60))
+    mime: Mapped[str] = mapped_column(String(40))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
 class Item(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10], max_length=40)
     type: Literal["camera", "door", "input", "output", "device", "link", "label"]
@@ -49,6 +58,7 @@ class Item(BaseModel):
     size: float = Field(1, ge=0.4, le=3)
     label: str | None = Field(None, max_length=120)
     show_label: bool = True
+    icon: str | None = Field(None, max_length=60)      # "b:<built-in name>" or "c:<imported icon id>"; None = default
 
 
 class MapIn(BaseModel):
@@ -160,3 +170,94 @@ def _render_pdf(data: bytes) -> dict:
         if not pages:
             raise HTTPException(400, "Could not read this PDF: " + r.stderr.decode(errors="replace")[-200:])
         return {"pages": ["data:image/png;base64," + base64.b64encode(p.read_bytes()).decode() for p in pages]}
+
+
+# ---------------------------------------------------------------- icons imported for maps
+ICON_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+              ".gif": "image/gif"}
+MAX_ICON = 400 * 1024
+
+
+@router.get("/maps/icons")
+def list_icons(_=Depends(require("viewer"))):
+    with SessionLocal() as s:
+        return [{"id": r.id, "name": r.name, "category": r.category, "url": f"/api/maps/icons/{r.id}"}
+                for r in s.query(IconRow.id, IconRow.name, IconRow.category).order_by(IconRow.category, IconRow.name)]
+
+
+@router.post("/maps/icons")
+async def import_icons(files: list[UploadFile] = File(...), category: str = Form("My icons"), _=Depends(require("admin"))):
+    """SVG / PNG / JPG / WEBP files, or ZIP files full of them (folders in the ZIP become categories)."""
+    import io
+    import zipfile
+    category = (category or "My icons").strip()[:60] or "My icons"
+    found, skipped = [], []
+
+    def add(name: str, data: bytes, cat: str):
+        ext = Path(name).suffix.lower()
+        if ext not in ICON_TYPES:
+            return
+        if len(data) > MAX_ICON:
+            skipped.append(f"{Path(name).name} (bigger than 400 KB)")
+            return
+        if ext == ".svg" and b"<svg" not in data[:4096].lower():
+            skipped.append(f"{Path(name).name} (not an SVG)")
+            return
+        found.append((Path(name).stem.replace("_", " ").replace("-", " ")[:80], cat[:60], ICON_TYPES[ext], data))
+
+    for f in files[:50]:
+        data = await f.read(80 * 1024 * 1024 + 1)
+        fname = Path(f.filename or "icon").name
+        if fname.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    for info in z.infolist()[:3000]:
+                        if info.is_dir() or "__MACOSX" in info.filename or Path(info.filename).name.startswith("."):
+                            continue
+                        if info.file_size > MAX_ICON:
+                            skipped.append(f"{Path(info.filename).name} (bigger than 400 KB)")
+                            continue
+                        parts = Path(info.filename).parts
+                        cat = parts[-2] if len(parts) > 1 else category
+                        add(info.filename, z.read(info), cat)
+            except zipfile.BadZipFile:
+                skipped.append(f"{fname} (damaged ZIP)")
+        else:
+            add(fname, data, category)
+    if len(found) > 2000:
+        raise HTTPException(400, "At most 2000 icons at a time")
+    with SessionLocal() as s:
+        for name, cat, mime, data in found:
+            s.add(IconRow(id=uuid.uuid4().hex[:12], name=name or "icon", category=cat, mime=mime, data=data))
+        s.commit()
+    return {"imported": len(found), "skipped": skipped[:30]}
+
+
+@router.get("/maps/icons/{iid}")
+def get_icon(iid: str, _=Depends(require("viewer"))):
+    with SessionLocal() as s:
+        r = s.get(IconRow, iid)
+        if not r:
+            raise HTTPException(404)
+        headers = {"Cache-Control": "private, max-age=604800"}
+        if r.mime == "image/svg+xml":
+            headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+        return Response(r.data, media_type=r.mime, headers=headers)
+
+
+@router.delete("/maps/icons/{iid}")
+def delete_icon(iid: str, _=Depends(require("admin"))):
+    with SessionLocal() as s:
+        r = s.get(IconRow, iid)
+        if r:
+            s.delete(r)
+            s.commit()
+    return {"ok": True}
+
+
+@router.delete("/maps/icon-categories/{category}")
+def delete_icon_category(category: str, _=Depends(require("admin"))):
+    with SessionLocal() as s:
+        n = s.query(IconRow).filter(IconRow.category == category).delete()
+        s.commit()
+    return {"deleted": n}
